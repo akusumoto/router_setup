@@ -110,6 +110,8 @@ generic-ext4-combined.img.gz
 
 UEFIが利用できるなら `combined-efi` を優先する。
 
+ファイル名のターゲット部分は **`x86-64`** を選ぶ。`x86-legacy` は古い32-bit PC向けであり、この手順のDS57U用イメージとして使わない。
+
 ### ext4を選ぶ理由
 
 - root filesystemを後から拡張しやすい
@@ -154,30 +156,82 @@ Rufus、balenaEtcher等で `.img.gz` または展開した `.img` を対象ド�
 
 #### 方法B: Linux Live USBから書き込む
 
-DS57UをLinux Live USBで起動し、OpenWrtイメージを内蔵ドライブへ `dd` で書き込む。
+以下はUbuntu DesktopのLive USBを使う例。**内蔵ストレージへの書き込みは既存のパーティションとデータを消去する。** 書き込み前に必要なデータがないことを確認する。
 
-**対象デバイス名を間違えると別ドライブを消去するため要注意。**
+1. 別のPCで[Ubuntu DesktopのISO](https://ubuntu.com/download/desktop)をダウンロードし、[Ubuntu公式の手順](https://ubuntu.com/desktop/docs/en/latest/how-to/create-a-bootable-usb-stick/)に従ってRufusなどでUSBメモリへ書き込む。この操作でUSBメモリ上のデータは消える。
+2. DS57Uへディスプレイ、キーボード、Live USBを接続する。OpenWrtイメージをLive環境でダウンロードするなら、DS57Uの有線ポートをBUFFALOのLANへ接続しておく。
+3. DS57Uの起動メニューからUSBを選び、Ubuntuの **Try Ubuntu** を起動する。Ubuntuを内蔵ストレージへインストールしない。
+4. ターミナルで起動方式を確認する。必要ならDS57UのBIOS設定も確認する。
 
-例:
+   ```bash
+   test -d /sys/firmware/efi && echo UEFI || echo 'Legacy BIOS'
+   ```
 
-```bash
-lsblk
-```
+5. OpenWrt公式の[x86/64ダウンロード一覧](https://downloads.openwrt.org/releases/25.12.5/targets/x86/64/)から、起動方式に合う **ext4 combined** イメージを取得する。以下はOpenWrt 25.12.5のUEFI用の例。`/tmp` への保存はLive環境内の一時保存であり、再起動すると消える。
 
-対象が `/dev/sda` であることを確認した場合のみ:
+   ```bash
+   cd /tmp
+   IMAGE=openwrt-25.12.5-x86-64-generic-ext4-combined-efi.img.gz
+   curl -fLO "https://downloads.openwrt.org/releases/25.12.5/targets/x86/64/$IMAGE"
+   sha256sum "$IMAGE"
+   ```
 
-```bash
-gunzip -c openwrt-*-x86-64-generic-ext4-combined-efi.img.gz \
-  | sudo dd of=/dev/sda bs=4M status=progress conv=fsync
-```
+   UEFI用のSHA-256は `c8ee59ce7b0f635a6b50c1b7307b07ee7785214a6faf2af42280dd4ef4310290`。Legacy BIOS用は `IMAGE=openwrt-25.12.5-x86-64-generic-ext4-combined.img.gz` に変更して取得し、SHA-256 `23e2538e8ab0eb52dfed1c65d608ecdb71ffd432dd54885da138ae67cd9e4461` と照合する。**一致しなければ書き込まない。** 別のバージョンを使う場合は、URL、ファイル名、公開SHA-256を同じバージョンで揃える。
 
-`/dev/sda` は例であり、実機で必ず確認する。
+6. 内蔵ストレージのデバイス名を確認する。
+
+   ```bash
+   lsblk -o NAME,SIZE,MODEL,TRAN,TYPE,MOUNTPOINTS
+   ```
+
+   容量とモデル名で内蔵ストレージを特定し、Live USBと区別する。対象はディスク全体（例: `/dev/sda`、`/dev/nvme0n1`）であり、パーティション（例: `/dev/sda1`）ではない。**特定できなければ作業を止める。** 対象ディスクのパーティションがマウントされている場合は、書き込み前にアンマウントする。
+
+7. ファイルの展開テスト後、確認した内蔵ディスクへ書き込む。`/dev/REPLACE_WITH_INTERNAL_DISK` は、手順6で確認したディスク名に置き換える。`/dev/sda` と決め打ちしない。
+
+   ```bash
+   gzip -t "$IMAGE"
+   set -o pipefail
+   gzip -dc "$IMAGE" | sudo dd of=/dev/REPLACE_WITH_INTERNAL_DISK bs=4M status=progress conv=fsync
+   sync
+   ```
+
+   `gzip -t` に失敗した場合は `dd` を実行しない。`dd` の完了とエラーがないことを確認してからシャットダウンし、Live USBを抜いて内蔵ストレージから起動する。
+
+今回のDS57UではLive環境がLegacy BIOSモードで起動し、OpenWrtの書き込みには **`openwrt-25.12.5-x86-64-generic-ext4-combined.img.gz`**（`-efi` なし）を使用した。初回起動の結果は次の5.3節に記録する。
 
 ### 5.3 初回起動
 
 - OpenWrtを書き込んだ内蔵ストレージから起動
 - コンソールにOpenWrtのログインプロンプトが出ることを確認
 - 起動失敗時はBIOSのUEFI / Legacy設定と使用イメージを確認
+
+実機の初回起動時に表示されたコンソールの抜粋（2026-09-20確認）:
+
+```text
+BusyBox v1.37.0 (2026-06-29 12:59:20 UTC) built-in shell (ash)
+
+  _______                     ________        __
+ |       |.-----.-----.-----.|  |  |  |.----.|  |_
+ |   -   ||  _  |  -__|     ||  |  |  ||   _||   _|
+ |_______||   __|_____|__|__||________||__|  |____|
+          |__| W I R E L E S S   F R E E D O M
+ -----------------------------------------------------
+OpenWrt 25.12.5, r33051-f5dae5ece4 Dave's Guitar
+
+=== WARNING! =============================================
+There is no root password defined on this device!
+Use the "passwd" command to set up a new password
+in order to prevent unauthorized SSH logins.
+==========================================================
+
+OpenWrt recently switched to the "apk" package manager!
+opkg install <pkg>  -> apk add <pkg>
+opkg update         -> apk update
+
+root@OpenWrt:~#
+```
+
+この表示でOpenWrt 25.12.5の起動とrootシェルへの到達を確認できた。警告のとおり、続けて `passwd` でrootパスワードを設定する。
 
 ---
 
@@ -375,17 +429,13 @@ DNS        : OpenWrt経由
 
 となることを確認する。
 
-OpenWrt側では:
-
-```bash
-ubus call dhcp ipv4leases
-```
-
-環境によっては以下でも確認する。
+OpenWrt側ではdnsmasqのリースファイルを確認する。
 
 ```bash
 cat /tmp/dhcp.leases
 ```
+
+OpenWrt 25.12.5の実機では `ubus call dhcp ipv4leases` は `Method not found` となった。利用可能な`dhcp`メソッドは `ubus -v list dhcp` で確認できる。
 
 ---
 

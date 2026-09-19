@@ -17,3 +17,6 @@
 # OS metadata
 .DS_Store
 Thumbs.db
+
+# Local SSH access key for the test router
+/.local-ssh/
