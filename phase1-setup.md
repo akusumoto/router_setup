@@ -1,6 +1,6 @@
 # Phase 1 実施手順 — BUFFALO配下でOpenWrt基本機能を構築
 
-更新日: 2026-09-14
+更新日: 2026-09-20
 
 ## 1. Phase 1 の目的
 
@@ -76,15 +76,12 @@ BUFFALO側が `192.168.11.0/24` のため、ネットワークは重複しない
 - Intel i218LM Gigabit Ethernet
 - Realtek RTL8188EE
   - 今回は使用しない
+- RAM: 約8 GB（OpenWrtの `MemTotal: 8039660 kB`、約7.67 GiB）
+- 内蔵ストレージ: SanDisk SATA SSD、約119.2 GiB（公称128 GB級）
 - USBメモリ
 - キーボード / ディスプレイ
 - テスト用PC
 - LANケーブル 2本以上
-
-未確認:
-
-- RAM容量
-- 内蔵ストレージ種類・容量
 
 OpenWrtを書き込む前に、内蔵ストレージ上の必要なデータがないことを必ず確認する。
 
@@ -231,7 +228,7 @@ opkg update         -> apk update
 root@OpenWrt:~#
 ```
 
-この表示でOpenWrt 25.12.5の起動とrootシェルへの到達を確認できた。警告のとおり、続けて `passwd` でrootパスワードを設定する。
+この表示でOpenWrt 25.12.5の起動とrootシェルへの到達を確認できた。初回表示ではrootパスワード未設定だったが、その後の確認では `/etc/shadow` にrootのパスワードハッシュが存在した（ハッシュ自体は記録しない）。
 
 ---
 
@@ -270,6 +267,15 @@ LANケーブルを片方のポートだけに挿し、抜き差ししながら�
 DS57U 物理ポートA -> Linux interface: __________ -> Intel __________
 DS57U 物理ポートB -> Linux interface: __________ -> Intel __________
 ```
+
+実機で確認したNICと役割（2026-09-20）:
+
+| Linuxインターフェース | PCI ID | NIC | 現在の役割 |
+|---|---|---|---|
+| `eth0` | `8086:1539` | Intel i211 | WAN、BUFFALO LANへ接続 |
+| `eth1` | `8086:15a2` | Intel i218-LM | LAN、`br-lan` のメンバー |
+
+PCI IDの型番対応はLinuxの[igb](https://github.com/torvalds/linux/blob/master/drivers/net/ethernet/intel/igb/e1000_hw.h)と[e1000e](https://github.com/torvalds/linux/blob/master/drivers/net/ethernet/intel/e1000e/hw.h)の定義で照合した。筐体の左右どちらの物理ソケットが `eth0` / `eth1` かは、まだ位置を記録していない。
 
 確認後、筐体へ物理ラベルを貼る。
 
@@ -626,25 +632,33 @@ nft list ruleset > /tmp/phase1-nft.txt
 
 ## 18. Phase 1 完了チェックリスト
 
-- [ ] RAM容量を確認した
-- [ ] ストレージ種類・容量を確認した
-- [ ] OpenWrt x86_64を書き込んだ
-- [ ] OpenWrtが内蔵ストレージから起動した
-- [ ] Intel i211を認識した
-- [ ] Intel i218LMを認識した
+2026-09-20の実機確認結果:
+
+- OpenWrt 25.12.5（x86/64、ext4）がDS57Uで起動。内蔵SSDは `/dev/sda`（約119.2 GiB）で、現在のrootパーティションは約98.3 MiB。将来の追加パッケージや `router-agent` に向けた容量拡張は別途検討する。
+- `eth0` がWANとしてBUFFALOから `192.168.11.108/24` をDHCP取得。デフォルトゲートウェイとDNSは `192.168.11.1`。`eth1` が `br-lan` に属し、LANは `192.168.1.1/24`。
+- テストPCはDHCPで `192.168.1.239` を取得。PCから `1.1.1.1` への経路は `192.168.1.1` → `192.168.11.1` の順で、IPv4疎通と `openwrt.org` のDNS名前解決を確認した。
+- `nft list ruleset` が成功し、WAN側の入力拒否とIPv4 masqueradeを確認。BUFFALO側のPCアドレス `192.168.11.109` からOpenWrt WANアドレスのTCP 22/80/443へ接続できないことも確認した。
+- `uci show network/firewall/dhcp` と `ubus call network.interface.wan/lan status` で状態を取得。`tcpdump` と `conntrack` のコマンドはまだない。
+
+- [x] RAM容量を確認した
+- [x] ストレージ種類・容量を確認した
+- [x] OpenWrt x86_64を書き込んだ
+- [x] OpenWrtが内蔵ストレージから起動した
+- [x] Intel i211を認識した
+- [x] Intel i218LMを認識した
 - [ ] 物理LANポートとLinuxインターフェースの対応を記録した
-- [ ] WAN / LANの物理ポートを固定した
-- [ ] rootパスワードを設定した
-- [ ] LAN側PCへDHCPでアドレスを配布できた
-- [ ] WANがBUFFALOから `192.168.11.x` を取得した
-- [ ] OpenWrt自身からIPv4 Internetへ通信できた
-- [ ] テストPCからIPv4 Internetへ通信できた
-- [ ] DNS名前解決が動作した
-- [ ] `nft list ruleset` を確認した
-- [ ] WAN側からLuCI / SSHが開いていないことを確認した
+- [x] WAN / LANの物理ポートを固定した
+- [x] rootパスワードを設定した
+- [x] LAN側PCへDHCPでアドレスを配布できた
+- [x] WANがBUFFALOから `192.168.11.x` を取得した
+- [x] OpenWrt自身からIPv4 Internetへ通信できた
+- [x] テストPCからIPv4 Internetへ通信できた
+- [x] DNS名前解決が動作した
+- [x] `nft list ruleset` を確認した
+- [x] WAN側からLuCI / SSHが開いていないことを確認した
 - [ ] `tcpdump` でLAN/WAN通信を観測した
 - [ ] `conntrack` でLAN端末の通信を確認した
-- [ ] `uci show` / `ubus` で状態を取得した
+- [x] `uci show` / `ubus` で状態を取得した
 - [ ] Phase 1バックアップをPCへ保存した
 
 ---
