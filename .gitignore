@@ -1,0 +1,19 @@
+# Downloaded OpenWrt images and other local binaries
+/binary/
+
+# Router configuration backups and diagnostic snapshots
+/backups/
+/phase*-baseline.tar.gz
+/phase*-uci.txt
+/phase*-ip-addr.txt
+/phase*-ip-route.txt
+/phase*-ip6-route.txt
+/phase*-nft.txt
+
+# Packet captures
+*.pcap
+*.pcapng
+
+# OS metadata
+.DS_Store
+Thumbs.db
