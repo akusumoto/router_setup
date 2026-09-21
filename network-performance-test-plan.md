@@ -747,3 +747,299 @@ Real internet performance is affected by:
 Therefore, do not judge the superiority or inferiority of router performance solely based on a few percent speed difference.
 
 If a significant difference emerges, isolate the cause by combining LAN performance tests and OpenWrt CPU / interface statistics.
+
+## 16. Initial Real Internet Route Test — 2026-09-22
+
+### 16.1 Scope and topology
+
+This was a read-only initial test of the two routes that were simultaneously available from the same PC after Phase 1:
+
+```text
+Route A (BUFFALO): PC Wi-Fi 192.168.11.109 -> BUFFALO 192.168.11.1 -> ONU -> Internet
+Route B (OpenWrt): PC Ethernet 192.168.1.239 -> OpenWrt 192.168.1.1
+                    -> OpenWrt WAN 192.168.11.108 -> BUFFALO 192.168.11.1
+                    -> ONU -> Internet
+```
+
+This is not an equal wired-router comparison. Route A used Wi-Fi, while Route B used Ethernet and double NAT through OpenWrt and BUFFALO. The results only describe these current routes.
+
+The Windows route table contained both IPv4 default routes. The OpenWrt route had metric 25 and the BUFFALO route had metric 30. Each IPv4 test was explicitly bound to the corresponding PC source address.
+
+Only the BUFFALO Wi-Fi interface had a global IPv6 address and IPv6 default route. The OpenWrt Phase 1 Ethernet interface had ULA addresses but no IPv6 default route, so no Route B IPv6 internet comparison was attempted.
+
+### 16.2 IPv4 path and public-address check
+
+Command form:
+
+```powershell
+curl.exe -4 --interface <source-ip> --connect-timeout 10 --max-time 20 -sS https://cloudflare.com/cdn-cgi/trace
+```
+
+Observed result:
+
+| Route | Source address | HTTP result | Public IPv4 | Cloudflare location |
+|---|---|---|---|---|
+| BUFFALO | 192.168.11.109 | Success | 153.243.46.0 | NRT |
+| OpenWrt | 192.168.1.239 | Success | 153.243.46.0 | NRT |
+
+Both source-bound paths reached the internet and used the same public IPv4 address.
+
+### 16.3 Idle IPv4 RTT
+
+Successful command form:
+
+```powershell
+ping.exe -4 -S <source-ip> -n 30 1.1.1.1
+```
+
+| Route | Sent/received | Loss | Minimum | Average | Maximum |
+|---|---:|---:|---:|---:|---:|
+| BUFFALO | 30/30 | 0% | 6 ms | 6 ms | 7 ms |
+| OpenWrt | 30/30 | 0% | 6 ms | 6 ms | 22 ms |
+
+The Windows summary does not provide RTT standard deviation. One OpenWrt-path sample was 22 ms and one was 14 ms; the remaining samples were 6–7 ms.
+
+Failed attempt before the successful run:
+
+```powershell
+rtk proxy ping.exe -4 -S <source-ip> -n 30 -w 2000 1.1.1.1
+```
+
+This did not execute the ping because the local `rtk` PowerShell shim interpreted `-w` as an ambiguous PowerShell parameter. Removing the optional `-w` flag corrected the invocation.
+
+### 16.4 Initial download samples
+
+Each run downloaded 25,000,000 bytes from Cloudflare's speed endpoint and discarded the body. Runs were sequential, and the source address selected the route.
+
+Successful command form:
+
+```powershell
+curl.exe --ipv4 --interface <source-ip> --connect-timeout 10 --max-time 120 `
+  --output NUL --silent --show-error `
+  --write-out "code=%{http_code} bytes=%{size_download} time=%{time_total} speed_Bps=%{speed_download}" `
+  "https://speed.cloudflare.com/__down?bytes=25000000"
+```
+
+| Route | Run 1 | Run 2 | Run 3 | Median |
+|---|---:|---:|---:|---:|
+| BUFFALO | 240.49 Mbps | 377.30 Mbps | 426.20 Mbps | 377.30 Mbps |
+| OpenWrt | 88.78 Mbps | 88.61 Mbps | 82.93 Mbps | 88.61 Mbps |
+
+All six requests returned HTTP 200 and exactly 25,000,000 bytes. These short 25 MB transfers are preliminary samples, not maximum-line-rate certification.
+
+The first download attempt used curl's short `-o NUL` form and did not execute because the local `rtk` PowerShell shim interpreted `-o` as an ambiguous PowerShell parameter. Replacing it with `--output NUL` corrected the invocation.
+
+### 16.5 OpenWrt observations and cause of the throughput ceiling
+
+Router inspection used SSH with `.local-ssh/id_ed25519_v2`. A persistent session was used for each related command series. No router configuration was changed.
+
+Observed WAN status:
+
+```text
+up: true
+device: eth0
+protocol: DHCP
+IPv4 address: 192.168.11.108/24
+default gateway: 192.168.11.1
+DNS server: 192.168.11.1
+conntrack count after the transfer tests: 82
+```
+
+Observed link state from `/sys/class/net`:
+
+| Interface | Role | Speed | Duplex | Carrier | RX errors/drops | TX errors/drops |
+|---|---|---:|---|---:|---:|---:|
+| eth0 | WAN to BUFFALO | 1000 Mbps | full | 1 | 0 / 0 | 0 / 4 |
+| eth1 | LAN to test PC | 100 Mbps | full | 1 | 0 / 0 | 0 / 0 |
+
+The approximately 83–89 Mbps OpenWrt-path result is consistent with the observed 100 Mbps negotiation on `eth1`. Therefore this run does **not** demonstrate an OpenWrt routing or CPU limit. The LAN cable, PC NIC negotiation, and `eth1` negotiation must be corrected to 1000/full before a meaningful throughput comparison.
+
+The first router statistics attempt also showed two non-measurement failures: `ethtool` produced no matching speed/duplex/link lines, and this BusyBox `ip` implementation rejected `ip -s link`. Direct read-only `/sys/class/net/<interface>/...` values were then used successfully.
+
+### 16.6 DNS attempt
+
+Two attempts to automate three timed `Resolve-DnsName` queries per router failed locally because nested PowerShell and `cmd.exe` quoting was parsed incorrectly. No DNS query timing is recorded from those attempts. DNS cold/warm comparison remains pending and must use a checked script rather than an inline nested command.
+
+### 16.7 Result and next action
+
+- [x] Confirm both current IPv4 routes can reach the internet independently when bound to their source addresses.
+- [x] Record an initial 30-packet idle RTT sample for each route.
+- [x] Record three initial 25 MB download samples for each route.
+- [x] Inspect OpenWrt WAN status, conntrack count, physical link speed, duplex, carrier, and error/drop counters.
+- [x] Correct the OpenWrt LAN `eth1` link from 100/full to 1000/full. The Shuttle-to-GS305v3 cable was replaced on 2026-09-22.
+- [x] Repeat the same source-bound download and RTT tests after link correction. See Section 17.
+- [ ] Implement reproducible DNS cold/warm timing.
+- [x] Perform a wired BUFFALO-versus-OpenWrt comparison. See Section 17 Conditions B and C; the paths used different PC NICs, so it is not yet a same-adapter comparison.
+
+## 17. Real Internet Retests by Physical Connection Condition — 2026-09-22
+
+### 17.1 Purpose and shared procedure
+
+Sections 17 through 19 were consolidated because the route-selection and measurement procedure was unchanged. The variables were physical connection conditions:
+
+1. Replacement of the Shuttle `eth1` LAN cable, changing the link from 100/full to 1000/full.
+2. Replacement of BUFFALO Wi-Fi with an AX88179 wired connection.
+3. Movement of the AX88179 adapter from a USB 2.0 port to a USB 3.0 port.
+
+The following procedure was shared unless a condition-specific note says otherwise:
+
+- Wi-Fi source when enabled: `192.168.11.109`.
+- BUFFALO wired AX88179 source: `192.168.11.128`.
+- OpenWrt wired Realtek source: `192.168.1.239`.
+- BUFFALO gateway: `192.168.11.1`.
+- OpenWrt gateway: `192.168.1.1`.
+- IPv4 requests were explicitly bound to the applicable source address.
+- Path check: source-bound request to `https://cloudflare.com/cdn-cgi/trace`.
+- Idle RTT: `ping.exe -4 -S <source-ip> -n 30 1.1.1.1`.
+- Download: 25,000,000 bytes from `https://speed.cloudflare.com/__down?bytes=25000000`.
+- OpenWrt state was collected through persistent SSH sessions using `.local-ssh/id_ed25519_v2`.
+- No router configuration was changed.
+
+All successful path checks reported public IPv4 `153.243.46.0` at Cloudflare location `NRT`.
+
+### 17.2 Conditions and comparative results
+
+| Condition | BUFFALO client path | OpenWrt LAN link | BUFFALO median | OpenWrt median | Interpretation |
+|---|---|---:|---:|---:|---|
+| Initial, Section 16 | Wi-Fi | 100/full | 377.30 Mbps | 88.61 Mbps | OpenWrt was limited by the 100 Mbps Link A negotiation. |
+| A: Link A cable replaced | Wi-Fi | 1000/full | 353.48 Mbps | 513.34 Mbps | The OpenWrt 100 Mbps ceiling disappeared. |
+| B: BUFFALO wired, AX88179 on USB 2.0 | Wired, 1 Gbps Ethernet negotiation | 1000/full | 278.90 Mbps | 527.44 Mbps | BUFFALO-side result showed a stable approximately 280 Mbps ceiling. |
+| C: BUFFALO wired, AX88179 on USB 3.0 | Wired, 1 Gbps Ethernet negotiation | 1000/full | 566.50 Mbps | 566.67 Mbps | The USB-side ceiling disappeared; the two route medians were effectively equal. |
+
+The condition changes identify two independent physical bottlenecks:
+
+- Replacing the Shuttle-to-GS305v3 cable changed OpenWrt `eth1` from 100/full to 1000/full and raised the OpenWrt median from 88.61 to 513.34 Mbps.
+- Moving the same AX88179 adapter from USB 2.0 to USB 3.0 raised the BUFFALO wired median from 278.90 to 566.50 Mbps.
+
+The results do not support attributing the earlier BUFFALO under-400 Mbps result to Wi-Fi alone. The subsequent USB 2.0 wired result was slower than Wi-Fi, while the USB 3.0 wired result was substantially faster.
+
+### 17.3 Idle RTT by condition
+
+| Condition | BUFFALO path min/avg/max | OpenWrt path min/avg/max | Loss |
+|---|---:|---:|---:|
+| Initial, Section 16 | 6/6/7 ms, Wi-Fi | 6/6/22 ms | 0% both |
+| A: Link A cable replaced | 6/6/7 ms, Wi-Fi | 6/6/6 ms | 0% both |
+| B: AX88179 on USB 2.0 | 8/8/20 ms, wired | 6/6/12 ms | 0% both |
+| C: AX88179 on USB 3.0 | 8/8/9 ms, wired | 6/6/6 ms | 0% both |
+
+The wired paths used different PC NICs: AX88179 USB for BUFFALO and onboard Realtek for OpenWrt. The RTT difference therefore cannot be attributed solely to the routers.
+
+### 17.4 Condition A — replacement of the OpenWrt Link A cable
+
+Physical change:
+
+```text
+Shuttle eth1 -> replacement cable -> NETGEAR GS305v3
+```
+
+The user observed:
+
+```console
+root@OpenWrt:~# cat /sys/class/net/eth1/speed
+1000
+```
+
+Each request returned HTTP 200 and exactly 25,000,000 bytes:
+
+| Route | Run 1 | Run 2 | Run 3 | Median |
+|---|---:|---:|---:|---:|
+| BUFFALO Wi-Fi | 399.55 Mbps | 353.48 Mbps | 342.60 Mbps | 353.48 Mbps |
+| OpenWrt wired | 513.34 Mbps | 397.77 Mbps | 543.40 Mbps | 513.34 Mbps |
+
+Raw curl observations:
+
+```text
+route=BUFFALO run=1 code=200 bytes=25000000 time=0.500571 speed_Bps=49943264
+route=BUFFALO run=2 code=200 bytes=25000000 time=0.565803 speed_Bps=44185224
+route=BUFFALO run=3 code=200 bytes=25000000 time=0.583780 speed_Bps=42824571
+route=OpenWrt run=1 code=200 bytes=25000000 time=0.389610 speed_Bps=64167060
+route=OpenWrt run=2 code=200 bytes=25000000 time=0.502805 speed_Bps=49721262
+route=OpenWrt run=3 code=200 bytes=25000000 time=0.368052 speed_Bps=67925553
+```
+
+This confirmed that the original OpenWrt ceiling was caused by Link A negotiating at 100 Mbps.
+
+### 17.5 Condition B — wired BUFFALO through AX88179 on USB 2.0
+
+Wi-Fi was disconnected. Windows reported both Ethernet adapters at 1 Gbps. The first three runs were grouped by route; the next three were alternated. All twelve requests returned HTTP 200 and exactly 25,000,000 bytes.
+
+| Route | Run 1 | Run 2 | Run 3 | Run 4 | Run 5 | Run 6 | Median |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| BUFFALO wired | 258.39 | 293.23 | 281.02 | 279.88 | 277.92 | 275.12 | **278.90 Mbps** |
+| OpenWrt wired | 492.79 | 537.48 | 567.34 | 531.16 | 494.62 | 523.72 | **527.44 Mbps** |
+
+Raw curl speeds in bytes per second:
+
+```text
+BUFFALO: 32298197, 36653236, 35127851, 34985390, 34739833, 34390591
+OpenWrt: 61598354, 67185337, 70917760, 66394890, 61827012, 65465419
+```
+
+Windows reporting `1 Gbps` established Ethernet negotiation but did not establish the USB bus rate. The stable approximately 280 Mbps ceiling led to the USB 2.0 hypothesis.
+
+A read-only PowerShell attempt to inspect AX88179 parent/location metadata failed because nested quoting caused `Format-Table` to reject `-Wrap`. No USB bus-speed evidence came from that command.
+
+An attempt to obtain longer samples using `bytes=100000000` also failed: all six requests returned HTTP 403 with a one-byte body in 0.028–0.045 seconds. These endpoint rejections were not treated as throughput measurements.
+
+### 17.6 Condition C — same AX88179 moved to USB 3.0
+
+Wi-Fi remained disconnected. Addresses, routes, and reported 1 Gbps Ethernet link speeds were unchanged. Requests alternated between the two routes.
+
+Valid HTTP 200 results:
+
+| Route | Run 1 | Run 2 | Run 3 | Run 4 | Run 5 | Valid median |
+|---|---:|---:|---:|---:|---:|---:|
+| BUFFALO wired, USB 3.0 | 481.48 | 604.01 | 618.72 | 529.00 | - | **566.50 Mbps** |
+| OpenWrt wired | 616.70 | 483.58 | 566.67 | 481.98 | 584.53 | **566.67 Mbps** |
+
+BUFFALO had four valid samples and OpenWrt had five because Cloudflare began rate-limiting the sequence.
+
+Raw valid curl observations:
+
+```text
+route=OpenWrt-wired run=1 code=200 bytes=25000000 time=0.324313 speed_Bps=77086975
+route=BUFFALO-wired-USB3 run=1 code=200 bytes=25000000 time=0.415390 speed_Bps=60184839
+route=OpenWrt-wired run=2 code=200 bytes=25000000 time=0.413586 speed_Bps=60447212
+route=BUFFALO-wired-USB3 run=2 code=200 bytes=25000000 time=0.331120 speed_Bps=75501784
+route=OpenWrt-wired run=3 code=200 bytes=25000000 time=0.352939 speed_Bps=70834372
+route=BUFFALO-wired-USB3 run=3 code=200 bytes=25000000 time=0.323249 speed_Bps=77340238
+route=OpenWrt-wired run=4 code=200 bytes=25000000 time=0.414956 speed_Bps=60247641
+route=BUFFALO-wired-USB3 run=4 code=200 bytes=25000000 time=0.378078 speed_Bps=66124446
+route=OpenWrt-wired run=5 code=200 bytes=25000000 time=0.342158 speed_Bps=73066086
+```
+
+Rate-limited requests:
+
+```text
+route=BUFFALO-wired-USB3 run=5 code=429 bytes=1 time=0.049956
+route=OpenWrt-wired run=6 code=429 bytes=1 time=0.041718
+route=BUFFALO-wired-USB3 run=6 code=429 bytes=1 time=0.045823
+```
+
+The HTTP 429 responses were excluded and were not immediately retried.
+
+Moving the adapter to USB 3.0 removed the approximately 280 Mbps ceiling. The controlled before/after change strongly supports the USB 2.0 bus as the limiting factor in Condition B.
+
+### 17.7 OpenWrt post-test health snapshots
+
+These values were collected after each transfer series, not concurrently, so they are health snapshots rather than peak-load measurements.
+
+| Condition | Timestamp | eth0 | eth1 | eth1 errors/drops | Conntrack | Load average |
+|---|---|---|---|---:|---:|---|
+| A: cable replaced | 2026-09-22 01:46:30 JST | 1000/full | 1000/full | 0 / 0 | 74 | 0.00 0.00 0.00 |
+| B: AX88179 on USB 2.0 | 2026-09-22 02:08:56 JST | 1000/full | 1000/full | 0 / 0 | 81 | 0.00 0.00 0.00 |
+| C: AX88179 on USB 3.0 | 2026-09-22 02:14:27 JST | 1000/full | 1000/full | 0 / 0 | 107 | 0.05 0.01 0.00 |
+
+In every snapshot, both interfaces had carrier, full duplex, zero RX errors/drops, and zero TX errors. The four cumulative `eth0` TX drops remained unchanged. The Condition A memory snapshot was 8,039,660 KiB total, 55,932 KiB used, 7,904,420 KiB available, with no swap.
+
+### 17.8 Conclusions and remaining work
+
+- [x] Replace the faulty/unsuitable Shuttle-to-GS305v3 cable and restore OpenWrt `eth1` to 1000/full.
+- [x] Confirm the original OpenWrt approximately 89 Mbps ceiling disappears at 1000/full.
+- [x] Replace BUFFALO Wi-Fi with a 1 Gbps wired client connection.
+- [x] Identify and remove the AX88179 USB 2.0 throughput ceiling by moving it to USB 3.0.
+- [x] Observe effectively equal USB 3.0 BUFFALO and OpenWrt medians: 566.50 and 566.67 Mbps.
+- [ ] Repeat with the same PC Ethernet adapter moved between routers for a strict same-NIC comparison.
+- [ ] Use controlled LAN `iperf3` to isolate router forwarding from internet and endpoint variability.
+- [ ] Use longer-duration measurements from a suitable endpoint and collect CPU statistics concurrently.
+- [ ] Implement reproducible DNS cold/warm timing.
