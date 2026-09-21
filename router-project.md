@@ -1,136 +1,136 @@
-# 自作ルーター構築 技術検討メモ
+# Custom Router Setup Technical Notes
 
-更新日: 2026-09-13
+Last updated: 2026-09-13
 
-## 1. 目的
+## 1. Objective
 
-LANポートを2個備えた小型PCをルーター化し、ルーターへ直接ログインして以下を行える環境を構築する。
+Turn a small PC with 2 LAN ports into a router, log in directly to the router, and build an environment where the following can be done:
 
-- ネットワーク状況の監視
-- パケットキャプチャ・解析
-- ルーティング、Firewall、NATの観察
-- 自作プログラムによる監視・解析機能の追加
+- Monitor network status
+- Capture and analyze packets
+- Observe routing, Firewall, and NAT
+- Add monitoring and analysis functions via custom programs
 
-現状は **NTTフレッツ + OCN** を利用し、BUFFALO WSR-6000AX8がルーターとして動作している。接続方式は **OCNバーチャルコネクト** で、IPv6 IPoEとIPv4 over IPv6を利用している。
+Currently using **NTT FLET'S + OCN**, with a BUFFALO WSR-6000AX8 acting as the router. The connection method is **OCN Virtual Connect**, utilizing IPv6 IPoE and IPv4 over IPv6.
 
-## 2. 現在のネットワーク
+## 2. Current Network
 
 ```text
-NTT フレッツ / OCN
+NTT FLET'S / OCN
         |
-     ONU/回線終端
+      ONU
         |
 BUFFALO WSR-6000AX8
         |
-     家庭内LAN
+    Home LAN
 ```
 
-確認済み情報:
+Confirmed information:
 
-| 項目 | 内容 |
+| Item | Details |
 |---|---|
-| ルーター | BUFFALO WSR-6000AX8 |
-| 接続方式 | OCNバーチャルコネクト |
+| Router | BUFFALO WSR-6000AX8 |
+| Connection Method | OCN Virtual Connect |
 | IPv6 | IPoE |
 | IPv4 | IPv4 over IPv6 |
-| LAN | 192.168.11.0/24、ルーター 192.168.11.1 |
+| LAN | 192.168.11.0/24, Router 192.168.11.1 |
 
-BUFFALOの状態画面では、IPv4アドレス `153.243.46.0` と、`1392-1407`、`2416-2431`、`3440-3455` など複数の利用可能ポート範囲が表示されている。
+On the BUFFALO status screen, the IPv4 address `153.243.46.0` and multiple usable port ranges such as `1392-1407`, `2416-2431`, `3440-3455` are displayed.
 
-これらは、自作ルーターでMAP-Eを構成した際の照合用期待値として利用できる。
+These can be used as expected values for verification when configuring MAP-E on the custom router.
 
-## 3. 技術スタック
+## 3. Technology Stack
 
-現時点では **OpenWrt x86_64** を第一候補とする。
+Currently, **OpenWrt x86_64** is the primary candidate.
 
-| 領域 | 技術 | 方針 |
+| Area | Technology | Policy |
 |---|---|---|
-| Router OS | OpenWrt x86_64 | 第一候補 |
-| Firewall / NAT | nftables | Linux標準機構を直接観察・制御 |
-| IPv6 | OCN IPv6 IPoE | WAN直結で早期検証 |
-| IPv4 | OCN Virtual Connect / MAP-E | 最大の技術リスク。要実機検証 |
-| CLI | SSH / iproute2 | ルーターへ直接ログイン |
-| Packet capture | tcpdump / libpcap | 初期の解析手段 |
-| Connection monitoring | conntrack / vnStat | 接続・通信量監視 |
-| Custom backend | Rust | 自作router-agent / API / MCP実装の第一候補 |
-| Frontend | React / TypeScript | 自作監視Web UI候補 |
-| Metrics | Prometheus互換 + Grafana | 後期フェーズで追加 |
-| IDS | Suricata | 将来候補 |
+| Router OS | OpenWrt x86_64 | Primary candidate |
+| Firewall / NAT | nftables | Directly observe/control standard Linux mechanisms |
+| IPv6 | OCN IPv6 IPoE | Direct WAN connection for early verification |
+| IPv4 | OCN Virtual Connect / MAP-E | Highest technical risk. Requires real-device testing |
+| CLI | SSH / iproute2 | Direct login to the router |
+| Packet capture | tcpdump / libpcap | Initial analysis methods |
+| Connection monitoring | conntrack / vnStat | Monitor connections/traffic |
+| Custom backend | Rust | Primary candidate for custom router-agent / API / MCP implementation |
+| Frontend | React / TypeScript | Candidate for custom monitoring Web UI |
+| Metrics | Prometheus compatible + Grafana | To be added in later phases |
+| IDS | Suricata | Future candidate |
 
 
-## 3.1 使用予定ハードウェア
+## 3.1 Expected Hardware
 
-自作ルーター用PCとして **Shuttle DS57U** を使用する。
+Use **Shuttle DS57U** as the custom router PC.
 
-確認済み構成:
+Confirmed specs:
 
-| 項目 | 内容 | 方針 |
+| Item | Details | Policy |
 |---|---|---|
-| 本体 | Shuttle DS57U | 採用 |
-| CPU | Intel Celeron 3205U / 2コア / 1.5GHz | OpenWrt、通常のルーティング、監視用途には十分と見込む |
-| 有線LAN 1 | Intel i211 Gigabit Ethernet | WAN候補 |
-| 有線LAN 2 | Intel i218LM Gigabit Ethernet | LAN候補 |
-| 無線LAN | Realtek RTL8188EE | 今回は使用しない |
-| RAM | 未確認 | 要確認 |
-| ストレージ | 未確認 | 要確認 |
+| Model | Shuttle DS57U | Adopted |
+| CPU | Intel Celeron 3205U / 2 Cores / 1.5GHz | Expected to be sufficient for OpenWrt, routing, and monitoring |
+| Wired LAN 1 | Intel i211 Gigabit Ethernet | WAN candidate |
+| Wired LAN 2 | Intel i218LM Gigabit Ethernet | LAN candidate |
+| Wireless LAN | Realtek RTL8188EE | Will not be used this time |
+| RAM | Unconfirmed | To be confirmed |
+| Storage | Unconfirmed | To be confirmed |
 
-有線LANは2ポートともIntel製NICのため、OpenWrt/Linuxでの利用に適していると見込む。
+Since both wired LAN ports are Intel NICs, they are expected to be suitable for OpenWrt/Linux.
 
-無線LANの Realtek RTL8188EE は2.4GHz帯の旧世代Wi-Fiアダプタであり、本プロジェクトでは使用しない。Wi-Fiは既存のBUFFALOルーターをAPモードで利用する方針とする。
+The wireless LAN (Realtek RTL8188EE) is an older 2.4GHz Wi-Fi adapter and will not be used in this project. The plan is to use the existing BUFFALO router in AP mode for Wi-Fi.
 
-想定する最終構成:
+Expected final topology:
 
 ```text
-ONU / 回線終端
-      |
+ONU
+  |
 Intel NIC 1 (WAN)
-      |
+  |
 Shuttle DS57U / OpenWrt
-      |
+  |
 Intel NIC 2 (LAN)
-      |
-    Switch
-      |
-      +-- 有線端末
-      +-- BUFFALO (AP mode)
-              |
-             Wi-Fi
+  |
+Switch
+  |
+  +-- Wired Devices
+  +-- BUFFALO (AP mode)
+          |
+        Wi-Fi
 ```
 
-## 4. OpenWrtを選ぶ理由
+## 4. Reasons for choosing OpenWrt
 
-- WAN/LAN、DHCP、DNS、Firewall、NAT、IPv6など、ルーターとして必要な基盤が揃っている。
-- LinuxベースなのでSSHでログインし、`ip`、`nft`、`tcpdump`、`conntrack` などを直接利用できる。
-- x86_64小型PCで利用できる。
-- MAP-Eを扱うOpenWrtの `map` パッケージが存在する。
-- 自作プログラムを実行できる。
-- 将来的に自作監視UIやパケット解析機能を追加しやすい。
+- Has all the necessary foundations for a router (WAN/LAN, DHCP, DNS, Firewall, NAT, IPv6, etc.).
+- Being Linux-based, allows SSH login and direct use of `ip`, `nft`, `tcpdump`, `conntrack`, etc.
+- Can be used on x86_64 mini PCs.
+- Has a `map` package that handles MAP-E.
+- Can run custom programs.
+- Easy to add custom monitoring UIs and packet analysis functions in the future.
 
-## 5. OpenWrt上での自作プログラム
+## 5. Custom Programs on OpenWrt
 
-OpenWrt上で自作プログラムを実行できる。
+Custom programs can be executed on OpenWrt.
 
-ただし、一般的なUbuntu/Debian向けLinuxバイナリが必ずそのまま動くわけではない。OpenWrtは軽量環境で、`musl libc` などを利用するため、基本的には **OpenWrt SDK / toolchainを使って対象アーキテクチャ向けにクロスコンパイルする**。
+However, standard Linux binaries (for Ubuntu/Debian) do not always work out-of-the-box. Since OpenWrt is a lightweight environment utilizing `musl libc`, the general approach is to **cross-compile for the target architecture using the OpenWrt SDK / toolchain**.
 
 ```text
-開発PC
-  |-- Rust / C++ / C / Go 等
+Dev PC
+  |-- Rust / C++ / C / Go, etc.
   |-- OpenWrt SDK / toolchain
   |
-  +--> OpenWrt x86_64向けビルド
+  +--> Build for OpenWrt x86_64
              |
-             +--> SCP またはパッケージ化
+             +--> SCP or package
                        |
                        v
-                 自作OpenWrtルーター
+                 Custom OpenWrt Router
 ```
 
-自作 `router-agent` の実装言語は **Rust** を第一候補とする。
+**Rust** is the primary candidate for implementing the custom `router-agent`.
 
-将来的には以下のような構成を想定する。
+The future architecture is envisioned as follows:
 
 ```text
-ブラウザ / AI / Codex
+Browser / AI / Codex
         |
         +-- React / TypeScript
         +-- MCP client
@@ -149,20 +149,20 @@ Rust router-agent
         +-- libpcap
 ```
 
-パケット解析は、まず `tcpdump` / `libpcap` から始める。必要に応じて以下も検討する。
+Packet analysis will start with `tcpdump` / `libpcap`. The following will also be considered as needed:
 
 - AF_PACKET
 - Netfilter / NFQUEUE
 - eBPF
 
 
-### router-agent / MCP 方針
+### router-agent / MCP Policy
 
-`router-agent` は既製ソフトではなく、本プロジェクトで新規実装するOpenWrt向け管理エージェントとする。実装言語は **Rust**。
+The `router-agent` will not be off-the-shelf software, but a management agent newly implemented for OpenWrt in this project. The implementation language will be **Rust**.
 
-初期段階では読み取り専用で開始し、AIからルーター状態を安全に取得できることを優先する。将来的にはMCPサーバー機能を追加し、AI / Codexから構造化されたToolとしてルーターを診断・操作できるようにする。
+In the initial stage, it will start as read-only, prioritizing safe retrieval of router status by AI. In the future, MCP server functions will be added, allowing AI/Codex to diagnose and operate the router using structured Tools.
 
-想定する読み取り系Toolの例:
+Examples of expected read-only Tools:
 
 - `get_wan_status`
 - `get_ipv6_status`
@@ -172,7 +172,7 @@ Rust router-agent
 - `get_firewall_rules`
 - `get_interface_stats`
 
-構成イメージ:
+Architecture image:
 
 ```text
 AI / Codex
@@ -181,41 +181,41 @@ AI / Codex
     |
 Rust router-agent
     |
-    +-- UCI       : OpenWrt設定
-    +-- ubus      : OpenWrtの現在状態・サービス操作
-    +-- Netlink   : Linuxネットワーク情報
+    +-- UCI       : OpenWrt configuration
+    +-- ubus      : OpenWrt current status / service operations
+    +-- Netlink   : Linux network info
     +-- nftables  : Firewall / NAT
-    +-- libpcap   : パケット取得・解析
+    +-- libpcap   : Packet capture / analysis
 ```
 
-設定変更系Toolは後から段階的に追加する。AIへrootシェルを直接開放するのではなく、許可した操作だけを `router-agent` 経由で提供する。設定変更時は、検証・バックアップ・適用・疎通確認・失敗時ロールバックを行える設計を目指す。
+Configuration-changing Tools will be added gradually later. Instead of granting root shell access directly to AI, only permitted operations will be provided via the `router-agent`. For configuration changes, the design aims to support verification, backup, application, connectivity checks, and rollback on failure.
 
-Rustを採用する理由:
+Reasons for adopting Rust:
 
-- 常駐デーモンとしてメモリ安全性を重視できる
-- Netlink、libpcap、nftables等の低レイヤー処理と相性が良い
-- 非同期I/OやAPIサーバー実装に対応しやすい
-- OpenWrt x86_64向けに単一バイナリとして配布しやすい
-- 将来eBPF等へ発展させる場合にも相性が良い
+- Can prioritize memory safety as a resident daemon.
+- Works well with low-level processes like Netlink, libpcap, nftables.
+- Suitable for asynchronous I/O and API server implementation.
+- Easy to distribute as a single binary for OpenWrt x86_64.
+- Highly compatible with future evolutions like eBPF.
 
-## 6. BUFFALO配下でのテスト
+## 6. Testing Behind BUFFALO
 
-初期段階では以下の構成にする。
+Initial configuration:
 
 ```text
 ONU
  |
 BUFFALO
  |
-自作OpenWrt
+Custom OpenWrt
  |
-テストLAN
+Test LAN
 ```
 
-この状態で確認できるもの:
+What can be confirmed in this state:
 
-- OpenWrt起動
-- NIC認識
+- OpenWrt boot
+- NIC recognition
 - WAN / LAN
 - DHCP
 - DNS
@@ -224,60 +224,58 @@ BUFFALO
 - SSH
 - tcpdump
 - conntrack
-- 自作監視プログラム
+- Custom monitoring programs
 
-### 制限
+### Limitations
 
-BUFFALO配下では、OpenWrtのWAN側はOCN回線ではなくBUFFALOのLANになる。
+When placed behind the BUFFALO router, OpenWrt's WAN will be the BUFFALO's LAN, not the OCN line.
 
-そのため、以下は本番同等には検証できない。
+Therefore, the following cannot be tested as in production:
 
-- OpenWrt自身によるIPv6 IPoE接続
-- OCNからのIPv6情報取得
-- OCNバーチャルコネクト
-- MAP-Eパラメータ取得・計算
+- IPv6 IPoE connection by OpenWrt itself
+- IPv6 info retrieval from OCN
+- OCN Virtual Connect
+- MAP-E parameter retrieval/calculation
 - IPv4 over IPv6
-- MAP-Eで割り当てられたポートセットの動作
+- Operation of port sets allocated by MAP-E
 
-この部分は **WAN直結試験が必要**。
+These require **direct WAN connection testing**.
 
-## 7. OCNバーチャルコネクト / MAP-E 調査結果
+## 7. OCN Virtual Connect / MAP-E Research Results
 
-OpenWrtにはMAP-E / MAP-T / Lightweight 4over6を扱う `map` パッケージがあり、x86_64も対象となっている。
+OpenWrt has a `map` package that handles MAP-E / MAP-T / Lightweight 4over6, and it supports x86_64.
 
-また、OpenWrtでOCNバーチャルコネクトを利用した実例が存在するため、実現可能性は高い。
+Additionally, there are actual examples of using OCN Virtual Connect with OpenWrt, so feasibility is high.
 
-ただし、
+However,
 
-> OpenWrtがMAP-Eをサポートしている = OCNで標準設定だけで完全に動作する
+> OpenWrt supports MAP-E = It will work perfectly with standard OCN settings
 
-とは限らない。
+is not necessarily true.
 
-OCN向けに以下のMAP-E情報を正しく取得・計算・設定する必要がある。
+The following MAP-E information must be correctly retrieved, calculated, and configured for OCN:
 
-- IPv4アドレス
-- IPv6プレフィックス
-- BRアドレス
+- IPv4 address
+- IPv6 prefix
+- BR address
 - EA bits
 - PSID
-- 利用可能ポートセット
+- Usable port sets
 
-また、日本のMAP-E環境ではOpenWrt標準MAP処理の `map.sh` を調整している実装例もある。
+Furthermore, in Japanese MAP-E environments, there are implementation examples where the standard OpenWrt `map.sh` processing needs adjustment.
 
-そのため、単にIPv4 Webサイトへアクセスできることだけでなく、**複数の割当ポート範囲が正しくNATで利用されるか**まで確認する。
+Therefore, the main verification point for this project is not just being able to access IPv4 websites, but **confirming whether multiple allocated port ranges are correctly used by NAT**.
 
-これを本プロジェクトの主要検証項目とする。
+## 8. Recommended Testing Procedure
 
-## 8. 推奨する検証手順
+### Phase 1 - Behind BUFFALO
 
-### Phase 1 - BUFFALO配下
+Build the basic OpenWrt functions without stopping the home network.
 
-家庭ネットワークを止めずにOpenWrtの基本機能を構築する。
+Items to confirm:
 
-確認対象:
-
-- OpenWrt起動
-- NIC認識
+- OpenWrt boot
+- NIC recognition
 - WAN / LAN
 - DHCP
 - DNS
@@ -286,35 +284,35 @@ OCN向けに以下のMAP-E情報を正しく取得・計算・設定する必要
 - SSH
 - tcpdump
 
-### Phase 2A - WAN直結 / IPv6 IPoE
+### Phase 2A - Direct WAN Connection / IPv6 IPoE
 
-BUFFALOを一時的に外す。
+Temporarily bypass the BUFFALO router.
 
 ```text
 ONU
  |
 OpenWrt
  |
-テスト用PC
+Test PC
 ```
 
-まずMAP-Eは設定せず、IPv6だけ確認する。
+Do not configure MAP-E yet; confirm IPv6 only.
 
 ```bash
 ip -6 addr
 ip -6 route
 ```
 
-確認項目:
+Items to confirm:
 
-- IPv6アドレス取得
-- IPv6プレフィックス
+- IPv6 address acquisition
+- IPv6 prefix
 - IPv6 default route
-- IPv6インターネット通信
+- IPv6 internet communication
 
-### Phase 2B - MAP-Eパラメータ
+### Phase 2B - MAP-E Parameters
 
-取得したIPv6情報からOCN用MAP-Eパラメータを取得・計算する。
+Retrieve and calculate MAP-E parameters for OCN using the acquired IPv6 information.
 
 ```text
 IPv6 prefix
@@ -329,9 +327,9 @@ MAP-E parameters
       +-- port set
 ```
 
-BUFFALOで確認済みの値と照合する。
+Verify against values confirmed on the BUFFALO router.
 
-期待値の例:
+Expected examples:
 
 ```text
 IPv4 address
@@ -346,10 +344,10 @@ Port sets
 
 ### Phase 2C - IPv4 over IPv6
 
-MAP-Eを有効化する。
+Enable MAP-E.
 
 ```text
-LAN端末
+LAN Device
   |
  IPv4
   |
@@ -361,42 +359,42 @@ MAP-E
   |
 IPv4 in IPv6
   |
-OCN
+ OCN
   |
 IPv4 Internet
 ```
 
-IPv4インターネット通信が成立することを確認する。
+Confirm that IPv4 internet communication is established.
 
-### Phase 2D - ポートセット検証
+### Phase 2D - Port Set Verification
 
-単にWebサイトへアクセスできるだけでは不十分。
+Just being able to access a website is not enough.
 
-複数の割当ポート範囲が実際にNATで利用可能か確認する。
+Verify that multiple allocated port ranges are actually usable with NAT.
 
-### Phase 3 - モニタリング
+### Phase 3 - Monitoring
 
-以下を段階的に追加する。
+Gradually add the following:
 
 - conntrack
 - vnStat
-- 自作Rust router-agent
-- Prometheus互換metrics
+- Custom Rust router-agent
+- Prometheus compatible metrics
 - Grafana
-- ntopng等のフロー解析
+- Flow analysis like ntopng
 
-### Phase 4 - 発展
+### Phase 4 - Advanced
 
-必要に応じて以下を追加する。
+Add the following as needed:
 
 - VLAN
-- IoTネットワーク分離
-- Guest Wi-Fi分離
+- IoT network isolation
+- Guest Wi-Fi isolation
 - Server VLAN
 - Suricata
 - eBPF
 
-## 9. WAN直結時の確認コマンド候補
+## 9. Command Candidates for Direct WAN Connection Testing
 
 ```bash
 ip addr
@@ -404,7 +402,7 @@ ip route
 ip -6 addr
 ip -6 route
 
-# インターフェース上の通信観察
+# Monitor traffic on interface
 tcpdump -i <WAN interface>
 
 # Firewall / NAT
@@ -414,45 +412,43 @@ nft list ruleset
 conntrack -L
 ```
 
-## 10. リスク評価
+## 10. Risk Assessment
 
-| 項目 | リスク | 対応 |
+| Item | Risk | Mitigation |
 |---|---|---|
-| OpenWrt x86_64 | 低 | 小型PCのNIC互換性を事前確認 |
-| IPv6 IPoE | 低〜中 | WAN直結で早期検証 |
-| OCN MAP-E | 中 | 最重要。パラメータ・ポートセットまで実機検証 |
-| 家庭回線停止 | 中 | BUFFALOをすぐ戻せる状態で短時間試験 |
-| 自作監視機能 | 低 | ルーティング基盤と分離して段階導入 |
+| OpenWrt x86_64 | Low | Pre-check NIC compatibility of the mini PC |
+| IPv6 IPoE | Low-Med | Early verification via direct WAN connection |
+| OCN MAP-E | Med | Most important. Real-device testing down to parameters/port sets |
+| Home internet downtime | Med | Short tests with the ability to quickly revert to BUFFALO |
+| Custom monitoring | Low | Isolate from routing base and implement gradually |
 
 ## 11. TODO
 
-- [x] 小型PCの機種・CPUを確認する（Shuttle DS57U / Intel Celeron 3205U）
-- [ ] 小型PCのRAM容量を確認する
-- [x] 2個のLAN NICのメーカー／チップ型番を確認する（Intel i211 / Intel i218LM）
-- [ ] 小型PCのストレージ種類・容量を確認する
-- [ ] DS57U（Intel i211 / i218LM）でOpenWrt x86_64のイメージ／ドライバ互換性を確認する
-- [ ] OpenWrt基本構成後、早期にOCN WAN直結試験を実施する
+- [x] Check mini PC model/CPU (Shuttle DS57U / Intel Celeron 3205U)
+- [ ] Check mini PC RAM capacity
+- [x] Check manufacturer/chip model of the 2 LAN NICs (Intel i211 / Intel i218LM)
+- [ ] Check mini PC storage type/capacity
+- [ ] Check OpenWrt x86_64 image/driver compatibility with DS57U (Intel i211 / i218LM)
+- [ ] Perform early direct WAN connection testing with OCN after basic OpenWrt configuration
 
-## 12. 現時点の判断
+## 12. Current Decision
 
-**OpenWrt x86_64を第一候補として進める。**
+**Proceed with OpenWrt x86_64 as the primary candidate.**
 
-最大の不確定要素は **OCNバーチャルコネクト（MAP-E）**。
+The biggest uncertainty is **OCN Virtual Connect (MAP-E)**.
 
-そのため、ルーターの全機能を作り込む前に、
+Therefore, before building all router features, perform direct WAN connection testing in this order to confirm feasibility early on:
 
 1. IPv6 IPoE
-2. MAP-Eパラメータ
+2. MAP-E parameters
 3. IPv4 over IPv6
-4. ポートセット
+4. Port sets
 
-の順でWAN直結試験を行い、実現可能性を早期に確定する。
+After establishing an OCN connection on OpenWrt, gradually add the custom Rust `router-agent`, Web UI, MCP, and packet analysis/visualization features.
 
-OpenWrtでOCN接続が成立した後、自作Rust `router-agent`、Web UI、MCP、パケット解析・可視化機能を段階的に追加する。
-
-## 参考情報
+## References
 
 - OpenWrt: https://openwrt.org/
 - OpenWrt map package: https://openwrt.org/packages/pkgdata/map
-- OCNサポート: https://support.ocn.ne.jp/
+- OCN Support: https://support.ocn.ne.jp/
 - OpenWrt Japanese IPoE / MAP-E implementation examples: https://github.com/fakemanhk/openwrt-jp-ipoe

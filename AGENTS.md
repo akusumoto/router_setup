@@ -4,6 +4,10 @@
 - For a series of router commands, open one persistent SSH session and run the commands through that session. Reconnect only if the session ends or becomes unusable.
 - A single, isolated command may use a one-off SSH connection.
 
+## Documentation language
+
+- Write project documentation in English.
+
 ## Setup and test history
 
 - Record each setup action and test in the relevant phase document as it is performed. Include the date, cable/topology state, exact commands in execution order, command output and exit status, relevant configuration file contents or diffs, and the observed pass/fail result.
