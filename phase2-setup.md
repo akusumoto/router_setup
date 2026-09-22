@@ -1,6 +1,6 @@
 # Phase 2 Implementation Procedure — Verifying IPv6 IPoE / MAP-E via Direct OCN Connection
 
-Last updated: 2026-09-21
+Last updated: 2026-09-23
 Status: **Planning only. Wiring changes, configuration changes, and actual device testing for Phase 2 have not been executed.**
 
 ## 1. Objective and Completion Conditions
@@ -93,7 +93,13 @@ ubus call network.interface dump
 
 Stop installation if `apk search map` fails to find the package, if dependencies can't be resolved, or if space is insufficient. Do not run `apk upgrade`. Ensure no auto-generated MAP interface exists before proceeding to 2A. If `iface_map` is enabled, research how current and auto settings interact before proceeding to 2A. [OpenWrt IPv6 Config](https://openwrt.org/docs/guide-user/network/ipv6/configuration)
 
-### 3.3 BUFFALO Comparison Data
+### 3.3 Git-Managed Configuration Baseline
+
+Git records the intended, sanitized router configuration; it is not an automatic synchronization mechanism and must not apply changes to the router. Before any Phase 2 configuration change, capture a reviewable baseline in `router-config/` and commit it only after checking that it contains no credentials or personal network data that should remain private. Track sanitized UCI exports for `network`, `firewall`, and `dhcp`, together with the apply, verification, and rollback instructions. Do not track sysupgrade backups, packet captures, DHCP leases, SSH keys, password hashes, Wi-Fi/PPPoE credentials, or MAP-E values acquired from the live connection. `backups/` remains untracked.
+
+Treat a Git change as a proposed change. Review its diff first, take and verify the pre-change backup from 3.2, and then apply the equivalent deliberate UCI commands on the router. Before committing/reloading, inspect `uci changes` and verify that `br-lan`, `eth1`, and `192.168.1.1/24` remain unchanged. Record the executed commands, the sanitized diff, router output, and the rollback result in the implementation log. A committed Git baseline documents intent and review history; the verified backup remains the recovery artifact.
+
+### 3.4 BUFFALO Comparison Data
 
 Before rewiring, record the current IPv4 address, IPv6 prefix, available port ranges, and connection type from the BUFFALO status screen. Check IPoE provisioning status on the OCN MyPage. The values `153.243.46.0` and `1392-1407`, `2416-2431`, `3440-3455` in `router-project.md` are past examples and shouldn't be transcribed as Phase 2 settings. [OCN Provisioning Check](https://support.ocn.ne.jp/hikari/faq/detail/pid2300000h6p/)
 
@@ -252,6 +258,7 @@ Phase 2 is unexecuted. As each phase is run, append **executed commands, output,
 | Date/Time | JST and router's `date -Iseconds` |
 | Wiring | Blue/white cable destinations, BUFFALO/ONU status |
 | Config Diffs | `uci changes`, `uci show network/firewall/dhcp` |
+| Git Baseline | Sanitized `router-config/` diff, commit ID, secret-review result, and any applied UCI commands |
 | IPv6 | `ubus`, addresses, prefixes, routes, connectivity |
 | MAP-E | Rule source, full `mapcalc` output, BR, derived IPv4, PSID, port ranges |
 | IPv4 / NAT | PC source, routes, HTTPS, tunnels, `nft`, `conntrack`, external logs |
@@ -261,6 +268,7 @@ Phase 2 is unexecuted. As each phase is run, append **executed commands, output,
 ### Checklist
 
 - [ ] Saved pre-Phase 2 backup to PC and verified hash
+- [ ] Captured and reviewed sanitized Git configuration baseline
 - [ ] Logged current BUFFALO IPv4/IPv6 and port ranges
 - [ ] Confirmed `map` package and free space
 - [ ] Connected blue WAN cable to ONU, maintained white LAN path
