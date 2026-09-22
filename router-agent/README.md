@@ -12,9 +12,12 @@ router-agent --interface eth0 --interface br-lan
 ```
 
 The snapshot contains the collection time, hostname, kernel release, uptime,
-load average, memory total/available, conntrack entry count, and selected
-interface byte/packet/error/drop counters. Missing kernel files are represented
-as JSON `null`; a snapshot still succeeds rather than fabricating a value.
+load average, memory total/available, all local IPv4 addresses, conntrack entry
+count, and selected interface byte/packet/error/drop counters. Local IPv4
+addresses are read from `/proc/net/fib_trie`; they are intentionally not labelled
+with an interface in this first dependency-free slice. Missing scalar kernel
+values are represented as JSON `null`; a snapshot still succeeds rather than
+fabricating a value.
 
 Only interface names matching `[A-Za-z0-9_.-]+` are accepted. This prevents a
 CLI argument from escaping the intended `/sys/class/net/<name>/statistics`

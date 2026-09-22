@@ -104,6 +104,11 @@ fn ipv4_local_addresses_from(fib_trie: &str) -> Vec<String> {
             candidate = address
                 .parse::<Ipv4Addr>()
                 .ok()
+                .filter(|parsed| {
+                    *parsed != Ipv4Addr::new(127, 0, 0, 0)
+                        && !parsed.is_unspecified()
+                        && !parsed.is_multicast()
+                })
                 .map(|parsed| parsed.to_string());
         } else if trimmed.contains("host LOCAL") {
             if let Some(address) = candidate.take() {
@@ -250,6 +255,8 @@ mod tests {
     #[test]
     fn extracts_unique_local_ipv4_addresses_only() {
         let fixture = r#"
+            |-- 127.0.0.0
+               /8 host LOCAL
             |-- 192.168.11.0
                /24 link UNICAST
             |-- 192.168.11.108

@@ -196,12 +196,12 @@ a resident service. It exposes no TCP/UDP/Unix listener, MCP interface, web API,
 UCI write, ubus call, shell command, packet capture, or forwarding control.
 Each invocation reads only these kernel-provided files: hostname/kernel release,
 `/proc/uptime`, `/proc/loadavg`, `/proc/meminfo`,
-`/proc/sys/net/netfilter/nf_conntrack_count`, and interface counters under
-`/sys/class/net/<name>/statistics/`.
+`/proc/sys/net/netfilter/nf_conntrack_count`, `/proc/net/fib_trie`, and interface
+counters under `/sys/class/net/<name>/statistics/`.
 
 The JSON schema version is `1`. It includes timestamp, system resource values,
-conntrack count, and the eight byte/packet/error/drop fields for requested
-interfaces. The default interfaces are `eth0` and `br-lan`. An optional repeated
+local IPv4 addresses, conntrack count, and the eight byte/packet/error/drop
+fields for requested interfaces. The default interfaces are `eth0` and `br-lan`. An optional repeated
 `--interface NAME` accepts only `[A-Za-z0-9_.-]+` names up to 15 characters,
 preventing path traversal outside the selected sysfs directory. Missing kernel
 values are emitted as `null`, never guessed.
@@ -298,6 +298,38 @@ HTTPS, SSH, and DNS listeners. There is no `/etc/init.d/router-agent`, `ps w |
 grep '[r]outer-agent'` returned no process after each one-shot run, and `uci
 changes` produced no output. Therefore Phase 3B adds no resident process,
 listener, or UCI change.
+
+#### 2026-09-23 — Local IPv4 address query (executed)
+
+The initial 3B schema did not include an address field, so it could not satisfy
+an address query. The agent was extended without changing its no-subprocess,
+no-listener boundary: it parses only `/proc/net/fib_trie` and emits
+`ipv4_local_addresses`. A unit-test fixture covers duplicate local records,
+broadcast records, malformed text, and the special non-host `127.0.0.0` routing
+trie entry. The latter initially appeared in live output; it was then filtered
+before the corrected binary was accepted.
+
+After the correction, `cargo fmt --check`, `cargo test` (three tests), and the
+static musl release build passed. The final PC/router binary SHA-256 matched:
+`2f5c17f2f73e569669de0b0ad15a0d246907fa3da3d9e482a540ffffb40386bf`.
+
+```sh
+/usr/sbin/router-agent > /tmp/router-agent.addresses-v3.json; echo AGENT_EXIT=$?
+jsonfilter -i /tmp/router-agent.addresses-v3.json -e '@.ipv4_local_addresses[*]'; echo ADDRESSES_EXIT=$?
+```
+
+Both commands exited `0`. The final agent-sourced values were:
+
+```text
+127.0.0.1
+192.168.1.1
+192.168.11.108
+```
+
+`192.168.1.1` is the DS57U LAN address and `192.168.11.108` is its current
+BUFFALO-side WAN address. `uci changes` remained empty. These values are a
+point-in-time read; the agent intentionally does not yet associate IPv4 entries
+with interfaces in its schema.
 
 ### 7.4 Phase 3B Checklist
 
