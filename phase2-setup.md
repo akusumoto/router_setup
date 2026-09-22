@@ -1,7 +1,7 @@
 # Phase 2 Implementation Procedure — Verifying IPv6 IPoE / MAP-E via Direct OCN Connection
 
 Last updated: 2026-09-23
-Status: **Planning only. Wiring changes, configuration changes, and actual device testing for Phase 2 have not been executed.**
+Status: **The automatic-MAP preparation in the execution log has been completed. Direct-ONU wiring and Phase 2A–2D device testing have not been executed.**
 
 ## 1. Objective and Completion Conditions
 
@@ -99,7 +99,104 @@ Git records the intended, sanitized router configuration; it is not an automatic
 
 Treat a Git change as a proposed change. Review its diff first, take and verify the pre-change backup from 3.2, and then apply the equivalent deliberate UCI commands on the router. Before committing/reloading, inspect `uci changes` and verify that `br-lan`, `eth1`, and `192.168.1.1/24` remain unchanged. Record the executed commands, the sanitized diff, router output, and the rollback result in the implementation log. A committed Git baseline documents intent and review history; the verified backup remains the recovery artifact.
 
-### 3.4 BUFFALO Comparison Data
+### 3.4 Automatic WAN Cable-Switch Test Procedure
+
+This procedure tests whether DS57U can establish the direct OCN connection automatically after a single physical WAN cable move. Here, “blue WAN cable” means the cable attached to DS57U's lower `eth0`; it is not a LAN cable. The test PC must stay wired to the white upper `eth1` LAN port. Do not connect BUFFALO WAN and DS57U `eth0` to the ONU-side hub at the same time.
+
+| Step | Owner | Action | Pass condition / boundary |
+|---|---|---|---|
+| 1 | Codex | Complete package, backup, and configuration preparation while DS57U remains behind BUFFALO. | `map` is installed; `network.wan6.iface_map='1'` is committed; pre-change backup hash matches on router and PC. Completed on 2026-09-23; see the execution log. |
+| 2 | Codex | Confirm the pre-switch WAN configuration without changing active addressing. | `wan` remains DHCP on `eth0`; `wan6` remains DHCPv6 on `eth0`; the WAN firewall zone contains `wan` and `wan6`; no static `network.map` rule exists. No additional WAN change is required. |
+| 3 | User | Move the ONU-side connection from BUFFALO to DS57U. | Only DS57U is connected to the ONU-side hub. The current home network may lose internet. |
+| 4 | Codex | Once the PC regains cloud access through DS57U, inspect automatic IPv6 and MAP-E state. | A valid direct `wan6` state is recorded; automatic IPv4 succeeds only if dynamic `wan6_4` is present and verified. |
+| 5 | User | Return the ONU-side connection to BUFFALO. | Only BUFFALO is connected to the ONU-side hub; the normal home internet path returns. |
+| 6 | Codex | Verify DS57U behind BUFFALO and restore its pre-test UCI state only if requested. | `wan`/`wan6` recover through BUFFALO. Leaving `iface_map='1'` is safe and permits another direct test; no restoration is normally required. |
+
+#### Step 1 — Codex preparation (completed)
+
+The completed work is documented in the 2026-09-23 execution log: a hash-verified pre-change backup was copied to the PC, package `map-7` was installed, and `network.wan6.iface_map='1'` was committed. `map` provides `/lib/netifd/proto/map.sh`; when DHCPv6 supplies MAP-E data, `iface_map='1'` permits netifd to add a dynamic `wan6_4` MAP interface. No static MAP-E rule was created because direct-service values are unknown.
+
+#### Step 2 — Codex pre-switch confirmation
+
+Immediately before the cable move, in the existing PC-to-DS57U SSH session, run read-only checks:
+
+```sh
+uci show network.wan
+uci show network.wan6
+uci show firewall.@zone[1]
+uci -q get network.map; echo STATIC_MAP_EXIT=$?
+apk info -e map; echo MAP_PACKAGE_EXIT=$?
+ubus call network.interface.wan6 status
+```
+
+Expected results: `wan` is DHCP on `eth0`; `wan6` is DHCPv6 on `eth0` with `iface_map='1'`; `STATIC_MAP_EXIT=1`; `MAP_PACKAGE_EXIT=0`; and LAN is not modified. Do not run `uci commit`, `ifdown`, or reboot in this step. The existing DHCP `wan` interface may fail to acquire native IPv4 after direct ONU connection; this alone is expected and is not a failure.
+
+#### Step 3 — User cable move
+
+1. Keep the PC wired only to DS57U `eth1`; disconnect Wi-Fi or other active routes used for testing.
+2. Disconnect BUFFALO WAN from the ONU-side hub and confirm that BUFFALO is no longer attached to that hub.
+3. Move the blue DS57U `eth0` WAN cable from BUFFALO LAN to the same ONU-side hub port.
+4. Do not reboot DS57U and do not connect BUFFALO WAN to the ONU-side hub while DS57U is connected.
+5. Wait up to two minutes for the Ethernet link, RA, and DHCPv6 exchange. Cloud access may disappear during this interval, so no Codex action is expected until the PC can reach the service through DS57U.
+
+#### Step 4 — Codex direct-ONU verification
+
+After cloud access returns, Codex runs the following over SSH and records the unredacted raw output only in ignored local logs; the phase document receives a redacted relevant excerpt:
+
+```sh
+date -Iseconds
+cat /sys/class/net/eth0/carrier
+ubus call network.interface.wan status
+ubus call network.interface.wan6 status
+ubus call network.interface.wan6_4 status
+ip -6 addr show dev eth0
+ip -6 route
+ip -4 addr
+ip -4 route
+nft list ruleset
+logread -e odhcp6c
+logread -e map
+ping -6 -c 4 2606:4700:4700::1111
+ping -4 -c 4 1.1.1.1
+```
+
+Classify the result before making any further setting change:
+
+- **Automatic success:** `wan6` is up with a direct IPv6 route; `wan6_4` is up; an IPv4 default route and MAP-generated SNAT rules exist; IPv6 and IPv4 pings pass. Continue to the Phase 2C/2D evidence checks.
+- **IPv6-only:** `wan6` is up but `wan6_4` is absent or down. Do not enter a static MAP-E rule. Capture DHCPv6/RA evidence and treat the automatic IPv4 attempt as failed or inconclusive.
+- **No IPv6:** `wan6` is down, lacks a default route, or fails external IPv6 ping. Do not modify UCI; proceed directly to Step 5.
+
+#### Step 5 — User return to BUFFALO
+
+1. Disconnect DS57U `eth0` from the ONU-side hub.
+2. Reconnect BUFFALO WAN to the ONU-side hub.
+3. Keep DS57U `eth0` connected to a BUFFALO LAN port as in the normal topology.
+4. Wait up to two minutes for BUFFALO and DS57U DHCP/DHCPv6 recovery. Confirm normal home connectivity before requesting Step 6.
+
+#### Step 6 — Codex post-return verification and optional restoration
+
+Codex verifies the normal DS57U path with:
+
+```sh
+ubus call network.interface.wan status
+ubus call network.interface.wan6 status
+ubus call network.interface.wan6_4 status
+ip route
+ip -6 route
+ping -c 4 192.168.11.1
+ping -c 4 1.1.1.1
+ping -6 -c 4 2606:4700:4700::1111
+```
+
+No router-setting restoration is normally needed: `map` is inert without MAP-E DHCPv6 data, and `iface_map='1'` does not create `wan6_4` through the current BUFFALO path. If the automatic direct-ONU test is abandoned and the original UCI state is specifically desired, use the reversible change below, then verify the commands above. Do not remove package `map`; retaining it preserves the tested preparation for a future attempt.
+
+```sh
+uci delete network.wan6.iface_map
+uci commit network
+ubus call network reload
+```
+
+### 3.5 BUFFALO Comparison Data
 
 Before rewiring, record the current IPv4 address, IPv6 prefix, available port ranges, and connection type from the BUFFALO status screen. Check IPoE provisioning status on the OCN MyPage. The values `153.243.46.0` and `1392-1407`, `2416-2431`, `3440-3455` in `router-project.md` are past examples and shouldn't be transcribed as Phase 2 settings. [OCN Provisioning Check](https://support.ocn.ne.jp/hikari/faq/detail/pid2300000h6p/)
 
@@ -267,16 +364,61 @@ Phase 2 is unexecuted. As each phase is run, append **executed commands, output,
 
 ### Checklist
 
-- [ ] Saved pre-Phase 2 backup to PC and verified hash
+- [x] Saved pre-Phase 2 backup to PC and verified hash
 - [ ] Captured and reviewed sanitized Git configuration baseline
 - [ ] Logged current BUFFALO IPv4/IPv6 and port ranges
-- [ ] Confirmed `map` package and free space
+- [x] Confirmed `map` package and free space
 - [ ] Connected blue WAN cable to ONU, maintained white LAN path
 - [ ] 2A: Confirmed OpenWrt's IPv6 address, route, and external connectivity
 - [ ] 2B: Logged MAP-E parameter sources and `mapcalc` results
 - [ ] 2C: Confirmed IPv4 over IPv6 traffic and WAN encapsulation
 - [ ] 2D: Confirmed setup and actual use of multiple port ranges
 - [ ] On failure, reverted to BUFFALO routing and re-confirmed IPv4/DNS/management access
+
+### 2026-09-23 — Automatic MAP-E Preparation (Executed)
+
+Topology remained unchanged throughout this entry: `ONU -> BUFFALO -> DS57U eth0`; the white `eth1` management LAN remained connected. The router clock reported `2026-09-22T15:51:34+00:00` at inspection and `2026-09-22T15:53:07+00:00` after configuration (2026-09-23 JST). No ONU-direct cable move was made.
+
+Initial read-only checks found `network.wan6.device='eth0'`, `network.wan6.proto='dhcpv6'`, firewall zone `wan` containing `wan` and `wan6`, and LAN unchanged as `br-lan`/`eth1`/`192.168.1.1/24`. At this point, `apk info -e map` and `test -f /lib/netifd/proto/map.sh` both exited `1`; `network.wan6.iface_map` was unset. `wan6` was up through BUFFALO with one `/64` address, no delegated prefix, and external IPv6 connectivity. Those upstream values are not evidence for direct ONU behavior and are intentionally not reproduced here.
+
+The following commands were executed in this order in one persistent SSH session; each command completed with exit status `0` except where noted below:
+
+```sh
+df -h /
+mkdir -p /root/phase2-prep
+cp -p /etc/config/network /root/phase2-prep/network
+cp -p /etc/config/firewall /root/phase2-prep/firewall
+cp -p /etc/config/dhcp /root/phase2-prep/dhcp
+sysupgrade -b /tmp/phase2-before-wan.tar.gz
+sha256sum /tmp/phase2-before-wan.tar.gz
+apk update
+apk search map
+apk add map
+apk info -e map
+test -f /lib/netifd/proto/map.sh
+uci set network.wan6.iface_map='1'
+uci changes
+uci commit network
+ubus call network reload
+uci show network.wan6
+ubus call network.interface.wan6 status
+ubus call network.interface.wan6_4 status
+ping -6 -c 2 2606:4700:4700::1111
+```
+
+Before package installation, `/` had 72.1 MiB free. `apk update` reported `OK: 11238 distinct packages available`; `apk search map` found `map-7`; and `apk add map` installed `map-7` plus ten dependencies. Afterwards, `/` had 71.5 MiB free, `apk info map` described MAP-E/MAP-T/LW4o6 support, and `/lib/netifd/proto/map.sh` existed.
+
+The pre-change archive was copied with `scp -O` to `backups/phase2-before-wan.tar.gz`. Router and PC SHA-256 values both were `dce1e58a40a79eb93c53b1500b616bfd6007987f8992fc04076fee28e715e7bf`.
+
+The only committed UCI change was:
+
+```text
+network.wan6.iface_map='1'
+```
+
+`uci changes` was empty after the commit. `wan6` remained up, and `ping -6 -c 2 2606:4700:4700::1111` returned 2/2 replies (minimum/average/maximum `6.078/6.156/6.234 ms`). `ubus call network.interface.wan6_4 status` returned `Command failed: Not found`, which is expected while the BUFFALO upstream supplies no MAP-E DHCPv6 option to DS57U.
+
+Result: **Passed only for pre-switch preparation.** On a future direct ONU connection, `wan6.iface_map='1'` permits DHCPv6-provided MAP-E data to create the dynamic MAP interface automatically. It does not synthesize a MAP-E rule if OCN does not provide one; in that case direct IPv6 and `wan6_4` state must be inspected before any manual MAP-E rule is considered. No Phase 2A/2B/2C/2D completion condition is met by this entry.
 
 ## 10. References
 
