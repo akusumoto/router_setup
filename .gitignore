@@ -20,3 +20,6 @@ Thumbs.db
 
 # Local SSH access key for the test router
 /.local-ssh/
+
+# Local Rust build artifacts for the router-agent source
+/router-agent/target/
