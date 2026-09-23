@@ -30,5 +30,5 @@ cargo build --release --target x86_64-unknown-linux-musl
 ```
 
 The target must be installed first with `rustup target add
-x86_64-unknown-linux-musl`. Deployment and service installation are deliberate
-Phase 3B steps and are documented in `../phase3-monitoring.md`.
+x86_64-unknown-linux-musl`. The complete design contract, deployment/rollback
+procedure, and recorded router validation are in [SPEC.md](SPEC.md).

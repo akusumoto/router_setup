@@ -189,6 +189,12 @@ Info: Monitoring: br-lan (1000 Mbit) eth0 (1000 Mbit)
 
 ## 7. Phase 3B — Read-only Rust Router-Agent
 
+The canonical router-agent specification, deployment/rollback procedure, and
+Phase 3B validation record now live in
+[`router-agent/SPEC.md`](router-agent/SPEC.md). The retained material below is
+the original in-plan execution record; keep future router-agent specification
+changes in `router-agent/SPEC.md`.
+
 ### 7.1 Scope and Security Boundary
 
 The first router-agent slice is a one-shot Rust CLI at `router-agent/`; it is not
