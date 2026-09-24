@@ -869,6 +869,83 @@ Two attempts to automate three timed `Resolve-DnsName` queries per router failed
 - [x] Correct the OpenWrt LAN `eth1` link from 100/full to 1000/full. The Shuttle-to-GS305v3 cable was replaced on 2026-09-22.
 - [x] Repeat the same source-bound download and RTT tests after link correction. See Section 17.
 - [ ] Implement reproducible DNS cold/warm timing.
+
+## 18. BAFFALO-to-ONU Cat6A Replacement: Real-Internet Retest — 2026-09-25
+
+### 18.1 Scope and topology
+
+The user replaced the BAFFALO-to-ONU Ethernet cable from Cat6 to Cat6A before this retest. No router configuration was changed. This is a source-bound real-internet test, not a controlled cable certification test: it confirms the paths were usable after the replacement, but does not by itself prove that Cat6A caused a speed change versus the previous cable.
+
+At the time of the test, the Windows host had both wired paths active:
+
+```text
+AX88179 USB 3.0 adapter, 192.168.11.20 -> BAFFALO, 192.168.11.1
+Realtek PCIe GbE adapter, 192.168.1.157 -> OpenWrt LAN, 192.168.1.1
+OpenWrt eth0, 192.168.11.108 -> BAFFALO, 192.168.11.1
+```
+
+The Windows IPv4 route table contained defaults of equal metric 25 for both source addresses. Every HTTP request below therefore explicitly used `--interface <source IPv4>`; this avoids treating the selected default route as evidence of the tested path.
+
+### 18.2 Commands and path/latency results
+
+Commands were executed in this order. `rtk proxy cmd.exe /c` was used because the wrapper otherwise parses curl and ping flags. Both commands exited `0`.
+
+```powershell
+rtk proxy cmd.exe /c "curl.exe --ipv4 --interface 192.168.11.20 --connect-timeout 10 --max-time 20 --silent --show-error https://cloudflare.com/cdn-cgi/trace"
+rtk proxy cmd.exe /c "curl.exe --ipv4 --interface 192.168.1.157 --connect-timeout 10 --max-time 20 --silent --show-error https://cloudflare.com/cdn-cgi/trace"
+rtk proxy cmd.exe /c "ping.exe -4 -S 192.168.11.20 -n 30 -w 2000 1.1.1.1"
+rtk proxy cmd.exe /c "ping.exe -4 -S 192.168.1.157 -n 30 -w 2000 1.1.1.1"
+```
+
+Both Cloudflare traces reported the same public IPv4 address, `153.243.13.0`, and NRT. The exact ping summaries were:
+
+| Bound route | Sent/received/lost | RTT min/avg/max |
+|---|---:|---:|
+| BAFFALO, `192.168.11.20` | 30 / 30 / 0 (0%) | 3 / 3 / 6 ms |
+| OpenWrt, `192.168.1.157` | 30 / 30 / 0 (0%) | 4 / 4 / 5 ms |
+
+### 18.3 Download throughput
+
+The target was the same 25,000,000-byte Cloudflare object used by the earlier conditions. The first BAFFALO request and five alternating requests all returned HTTP `200` and exactly `25000000` bytes. The six curl commands exited `0`.
+
+```powershell
+rtk proxy cmd.exe /c "curl.exe --ipv4 --interface <source-ip> --connect-timeout 10 --max-time 120 --output NUL --silent --show-error --write-out \"route=<route> code=%{http_code} bytes=%{size_download} time=%{time_total} speed_Bps=%{speed_download}\n\" \"https://speed.cloudflare.com/__down?bytes=25000000\""
+```
+
+The commands were run in the following sequence: BAFFALO run 1, OpenWrt run 1, BAFFALO run 2, OpenWrt run 2, BAFFALO run 3, OpenWrt run 3.
+
+| Bound route | Run 1 | Run 2 | Run 3 | Median |
+|---|---:|---:|---:|---:|
+| BAFFALO, AX88179 USB 3.0 | 502.92 Mbps | 311.83 Mbps | 395.35 Mbps | **395.35 Mbps** |
+| OpenWrt, Realtek PCIe | 487.00 Mbps | 481.89 Mbps | 480.10 Mbps | **481.89 Mbps** |
+
+Raw successful curl observations:
+
+```text
+route=BUFFALO run=1 code=200 bytes=25000000 time=0.397683 speed_Bps=62864456
+route=OpenWrt run=1 code=200 bytes=25000000 time=0.410682 speed_Bps=60874795
+route=BUFFALO run=2 code=200 bytes=25000000 time=0.641372 speed_Bps=38979060
+route=OpenWrt run=2 code=200 bytes=25000000 time=0.415034 speed_Bps=60236319
+route=BUFFALO run=3 code=200 bytes=25000000 time=0.505887 speed_Bps=49418346
+route=OpenWrt run=3 code=200 bytes=25000000 time=0.416583 speed_Bps=60012338
+```
+
+Mbps is `speed_Bps * 8 / 1,000,000`. The BAFFALO series varied substantially, so its median rather than its best result is used for comparison.
+
+### 18.4 OpenWrt health evidence
+
+A persistent SSH session to `root@192.168.1.1` using `.local-ssh/id_ed25519_v2` collected read-only state before and after the transfers. The router clock recorded `2026-09-24 16:10:45 GMT` before the test and `16:12:43 GMT` after it (2026-09-25 JST). The WAN DHCP state was up on `eth0` with `192.168.11.108/24`, default gateway/DNS `192.168.11.1`.
+
+```text
+                     Before                 After
+eth0 / eth1          1000/full, carrier 1   1000/full, carrier 1
+eth0 errors/drops    RX 0/0, TX 0/4          RX 0/0, TX 0/4
+eth1 errors/drops    RX 0/0, TX 0/0          RX 0/0, TX 0/0
+load average         0.01 0.00 0.00          0.00 0.00 0.00
+conntrack count      132                     121
+```
+
+Observed result: the Cat6A replacement is followed by successful real-internet transfers on both paths, low-loss/low-latency pings, and no new OpenWrt interface errors or drops. The current samples do not establish an improvement over the 2026-09-22 USB 3.0 medians (566.50/566.67 Mbps), because Internet endpoints and time-of-day vary and there was no immediately-before Cat6 baseline under otherwise identical conditions. A controlled same-host/same-NIC retest and a BAFFALO WAN-port link/status observation would be needed to attribute a difference to this cable.
 - [x] Perform a wired BUFFALO-versus-OpenWrt comparison. See Section 17 Conditions B and C; the paths used different PC NICs, so it is not yet a same-adapter comparison.
 
 ## 17. Real Internet Retests by Physical Connection Condition — 2026-09-22
@@ -1043,3 +1120,51 @@ In every snapshot, both interfaces had carrier, full duplex, zero RX errors/drop
 - [ ] Use controlled LAN `iperf3` to isolate router forwarding from internet and endpoint variability.
 - [ ] Use longer-duration measurements from a suitable endpoint and collect CPU statistics concurrently.
 - [ ] Implement reproducible DNS cold/warm timing.
+
+## 19. Downlink and Uplink Retest — 2026-09-25
+
+This retest was deliberately limited to source-bound throughput. It did not collect route traces, pings, interface counters, or router health snapshots. The same active wired source addresses as Section 18 were used: BAFFALO `192.168.11.20` and OpenWrt `192.168.1.157`.
+
+### 19.1 Method and command outcomes
+
+Three 25,000,000-byte downloads per route were alternated, using:
+
+```powershell
+rtk proxy cmd.exe /c "curl.exe --ipv4 --interface <source-ip> --connect-timeout 10 --max-time 120 --output NUL --silent --show-error --write-out \"route=<route>-down run=<n> code=%{http_code} bytes=%{size_download} time=%{time_total} speed_Bps=%{speed_download}\n\" \"https://speed.cloudflare.com/__down?bytes=25000000\""
+```
+
+Three 25,000,000-byte synthetic-zero uploads per route were alternated, using:
+
+```powershell
+rtk proxy cmd.exe /c "powershell -NoProfile -Command \"$b = New-Object byte[] 25000000; [Console]::OpenStandardOutput().Write($b,0,$b.Length)\" | curl.exe --ipv4 --interface <source-ip> --connect-timeout 10 --max-time 120 --output NUL --silent --show-error --data-binary @- --write-out \"route=<route>-up run=<n> code=%{http_code} bytes=%{size_upload} time=%{time_total} speed_Bps=%{speed_upload}\n\" \"https://speed.cloudflare.com/__up\""
+```
+
+All twelve measured curl invocations exited `0`, returned HTTP `200`, and transferred exactly `25000000` bytes. A prior 10,000,000-byte BAFFALO upload validation also returned HTTP `200` (1.246334 seconds, 8023544 B/s); it is not included in the results below.
+
+### 19.2 Results
+
+Mbps is `speed_Bps * 8 / 1,000,000`; the bold figure is the median of the three valid samples.
+
+| Bound route | Downlink runs (Mbps) | Downlink median | Uplink runs (Mbps) | Uplink median |
+|---|---:|---:|---:|---:|
+| BAFFALO, AX88179 USB 3.0 | 244.40, 575.11, 413.05 | **413.05 Mbps** | 132.25, 94.71, 113.63 | **113.63 Mbps** |
+| OpenWrt, Realtek PCIe | 588.87, 520.08, 497.39 | **520.08 Mbps** | 96.10, 105.69, 101.11 | **101.11 Mbps** |
+
+Raw results, in execution order:
+
+```text
+route=BUFFALO-down run=1 code=200 bytes=25000000 time=0.818326 speed_Bps=30550283
+route=OpenWrt-down run=1 code=200 bytes=25000000 time=0.339637 speed_Bps=73608432
+route=BUFFALO-down run=2 code=200 bytes=25000000 time=0.347763 speed_Bps=71888452
+route=OpenWrt-down run=2 code=200 bytes=25000000 time=0.384558 speed_Bps=65010037
+route=BUFFALO-down run=3 code=200 bytes=25000000 time=0.484200 speed_Bps=51631770
+route=OpenWrt-down run=3 code=200 bytes=25000000 time=0.402098 speed_Bps=62174361
+route=BUFFALO-up run=1 code=200 bytes=25000000 time=1.512274 speed_Bps=16531428
+route=OpenWrt-up run=1 code=200 bytes=25000000 time=2.081247 speed_Bps=12012040
+route=BUFFALO-up run=2 code=200 bytes=25000000 time=2.111795 speed_Bps=11838281
+route=OpenWrt-up run=2 code=200 bytes=25000000 time=1.892336 speed_Bps=13211198
+route=BUFFALO-up run=3 code=200 bytes=25000000 time=1.760111 speed_Bps=14203673
+route=OpenWrt-up run=3 code=200 bytes=25000000 time=1.977992 speed_Bps=12639093
+```
+
+The two routes are not a strict router-only comparison because they use different PC NICs and the OpenWrt path traverses BAFFALO upstream. The sample sets show real internet throughput at this time, not a sustained-line-rate guarantee.
