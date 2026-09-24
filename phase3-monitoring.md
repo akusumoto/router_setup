@@ -11,7 +11,7 @@ Add monitoring in small, reversible slices while preserving the existing DS57U r
 |---|---|---|---|
 | 3A | Local connection and traffic counters | Current conntrack/interface/resource baseline is recorded; `vnstat` is installed and its local database/service are verified | Implemented; history accumulating |
 | 3B | Router-agent | A separately reviewed agent exposes bounded local measurements without changing forwarding | Implemented as a one-shot local CLI |
-| 3C | Metrics export and visualization | Prometheus-compatible endpoint and Grafana use are separately sized, secured, and verified | Not started |
+| 3C | Metrics export and visualization | Prometheus-compatible endpoint and Grafana use are separately sized, secured, and verified | In progress; loopback exporter verified, Prometheus/Grafana blocked by Docker runtime |
 | 3D | Flow analysis | ntopng or an alternative is selected only after resource and privacy review | Not started |
 
 Do not install Grafana, Prometheus, ntopng, or a custom router-agent as part of 3A. They have materially different storage, CPU, network exposure, and data-retention consequences.
@@ -346,3 +346,283 @@ with interfaces in its schema.
 - [x] Confirmed rejection of an unsafe interface name
 - [x] Confirmed no service, running agent process, listener, or UCI change
 - [x] Kept Phase 2 direct-ONU/MAP-E work pending
+
+## 8. Phase 3C — Metrics Export and Visualization
+
+### 8.1 Selected deployment and migration boundary
+
+Phase 3C is separate from the one-shot Phase 3B CLI because it introduces a
+long-running metrics endpoint and a metrics store/dashboard. The initial
+assessment proposed an exporter bound only to router loopback, an SSH
+local-forward from the management PC, and Prometheus plus Grafana on that PC.
+A LAN-bound exporter is a different security decision because the current LAN
+firewall zone accepts input from every LAN client.
+
+On 2026-09-24 JST, the operator selected an interim router-local deployment:
+the OpenWrt exporter, Prometheus, and Grafana run on the DS57U. The exposure
+constraint remains loopback-only: exporter `127.0.0.1:9100`, Prometheus
+`127.0.0.1:9090`, and Grafana `127.0.0.1:3000`. Browser access, when Grafana
+is running, is through an SSH local forward rather than a LAN/WAN firewall
+opening. Grafana's administrator password is generated on the router in a
+root-only file and is never committed or copied to project documentation.
+
+The intended migration boundary is version-controlled configuration under
+`phase3c/` (deployed to `/etc/phase3c`) plus persistent Prometheus/Grafana data
+under `/opt/phase3c`. A future server/AWS move must export/copy those two
+paths, provision a new Grafana admin credential, bring up the new stack, verify
+the new scrape/dashboard, then stop the router-local stack. Docker image cache
+under `/opt/docker` is disposable and is not migration data.
+
+### 8.2 Read-only sizing and exposure assessment
+
+#### 2026-09-23 — Assessment (executed; no router change)
+
+Topology remained `ONU -> BUFFALO -> DS57U eth0`; management remained via the
+white `eth1` LAN cable. A persistent interactive SSH attempt connected, but the
+local execution wrapper did not retain its session handle. The following
+read-only SSH invocations were therefore made separately; no UCI, package, or
+service state was modified:
+
+```text
+ssh -i .local-ssh\id_ed25519_v2 -o BatchMode=yes root@192.168.1.1 "date '+%F %T %Z'; df -h /overlay; free; uci show firewall; netstat -lnt; apk search prometheus; apk search collectd; apk info vnstat; /etc/init.d/vnstat status"
+```
+
+Relevant observations: at `2026-09-23 14:30:16 GMT`, `/dev/root` had `117.7G`
+free of `117.7G`; memory had `7904744 KiB` available and no swap. Firewall
+defaults were input `REJECT`, forward `REJECT`; the `lan` zone input was
+`ACCEPT`, and the `wan` zone input was `REJECT`. Existing TCP listeners were
+HTTP `80`, HTTPS `443`, SSH `22`, and DNS `53`; no metrics listener was
+observed. `vnstat` was still `running`.
+
+Exporter discovery did not yield a candidate, because every configured OpenWrt
+repository reported `WARNING: opening from cache ... packages.adb: No such file
+or directory`. This is an incomplete local APK metadata cache, not evidence
+that a Prometheus exporter is unavailable upstream. No `apk update` was run,
+so the assessment has zero package/configuration writes. Exit status was `0`
+for the sizing/firewall/listener query; `apk search` emitted the described
+cache warnings.
+
+#### 2026-09-24 JST — Router-local installation and blocked container startup (executed)
+
+The topology remained `ONU -> BUFFALO -> DS57U eth0`, with management through
+the white `eth1` LAN cable. Before the change, a fresh recovery artifact was
+created and copied with `scp -O` to ignored
+`backups/phase3c-before-prometheus-grafana.tar.gz`. The router and PC SHA-256
+both were `19471d481eb22157921c47875ef3cd4d4e330bcd84a2f8219863f06a16f1a573`.
+The remote status text was malformed by the local PowerShell wrapper's
+expansion of `$?`, but `sysupgrade -b` completed, produced the archive, and
+the `scp`/`certutil` hash match is the retained success evidence.
+
+Commands were issued in this order (the private-key path is project-local):
+
+```text
+ssh -i .local-ssh\id_ed25519_v2 -o BatchMode=yes root@192.168.1.1 "umask 077; sysupgrade -b /tmp/phase3c-before-prometheus-grafana.tar.gz; printf 'BACKUP_EXIT=%s\n' $?; sha256sum /tmp/phase3c-before-prometheus-grafana.tar.gz"
+scp -O -i .local-ssh\id_ed25519_v2 -o BatchMode=yes root@192.168.1.1:/tmp/phase3c-before-prometheus-grafana.tar.gz backups/phase3c-before-prometheus-grafana.tar.gz
+certutil -hashfile backups\phase3c-before-prometheus-grafana.tar.gz SHA256
+ssh -i .local-ssh\id_ed25519_v2 -o BatchMode=yes root@192.168.1.1 "apk update"
+ssh -i .local-ssh\id_ed25519_v2 -o BatchMode=yes root@192.168.1.1 "apk add --simulate dockerd docker docker-compose prometheus-node-exporter-lua prometheus-node-exporter-lua-openwrt"
+ssh -i .local-ssh\id_ed25519_v2 -o BatchMode=yes root@192.168.1.1 "apk add dockerd docker docker-compose prometheus-node-exporter-lua prometheus-node-exporter-lua-openwrt"
+```
+
+`apk update` completed with `OK: 11234 distinct packages available`. The exact
+install was simulated first, then executed:
+
+```sh
+apk add --simulate dockerd docker docker-compose prometheus-node-exporter-lua prometheus-node-exporter-lua-openwrt
+apk add dockerd docker docker-compose prometheus-node-exporter-lua prometheus-node-exporter-lua-openwrt
+```
+
+The simulation selected 48 packages and reported `OK: 273.0 MiB in 259
+packages`, including `dockerd-29.6.1-r1`, `docker-29.6.1-r1`,
+`docker-compose-5.1.4-r1`, `prometheus-node-exporter-lua-2026.06.05-r1`, and
+`prometheus-node-exporter-lua-openwrt-2026.06.05-r1`. Post-install root use was
+`2.9G`, leaving `114.8G`; the Grafana image cache is large (about `1.39GB` on
+disk). Docker is a material networking change: its init log recorded
+`Drop traffic from eth0 to docker0`. No external port was published by Phase
+3C.
+
+The exporter package's default configuration was retained:
+
+```text
+config prometheus-node-exporter-lua 'main'
+    option listen_interface 'loopback'
+    option listen_port '9100'
+```
+
+Its service was `running`; `netstat -lnt` showed only
+`127.0.0.1:9100`, and a local metrics read returned `node_load1`,
+`node_memory_MemAvailable_bytes`, and byte counters for `eth0`/`br-lan`.
+This verifies the Prometheus-compatible endpoint and its no-LAN/no-WAN bind.
+
+The checked-in `phase3c/compose.yml` pins `prom/prometheus:v3.14.0` and
+`grafana/grafana:13.2.1`, uses host networking solely to let both containers
+reach loopback services, binds Prometheus/Grafana themselves to loopback, and
+sets Prometheus retention to 15 days and 2 GiB. `phase3c/prometheus.yml`
+scrapes only `127.0.0.1:9100` every 30 seconds. Grafana provisioning adds that
+data source and an `OpenWrt Overview` dashboard with load, available-memory,
+and `eth0`/`br-lan` traffic panels. `docker compose ... config --quiet` exited
+0 without rendering the secret.
+
+Two setup corrections are retained as failures rather than silently omitted.
+The first random-secret command tried `base64`, which is absent on this image,
+and left a 28-byte incomplete environment file; the next `hexdump` format was
+also rejected. The final local-only command derived a 32-hex-character value
+from `/dev/urandom` using `md5sum` and yielded a 61-byte root-only file; the
+value was never printed. An inline attempt to write `daemon.json` was
+malformed by PowerShell quoting and failed `dockerd --validate`. It was
+replaced by the checked-in `phase3c/daemon.json`, copied with `scp -O`, then
+validated successfully before it was activated.
+
+The first image-store attempt pulled `prom/prometheus:v3.14.0` but failed when
+Docker 29.6.1 validated an image signature with `expected image index
+descriptor, got application/vnd.docker.distribution.manifest.list.v2+json`.
+The documented classic-store fallback was configured in
+`/etc/docker/daemon.json` and validated with
+`dockerd --validate --config-file=/etc/docker/daemon.json`:
+
+```json
+{
+  "features": {
+    "containerd-snapshotter": false
+  }
+}
+```
+
+`dockerd.globals.alt_config_file` was committed to that path and Docker was
+restarted. `docker info` then reported `overlay2`. The pinned images were
+successfully cached, but `docker compose ... up -d --pull=never` still failed
+before creating either container:
+
+```text
+failed to create task for container: failed to create shim task: OCI runtime create failed: runc create failed: invalid rootfs: not an absolute path, or a symlink
+```
+
+`docker compose ps -a` and `docker ps -a` were empty afterward; neither port
+9090 nor 3000 listens. This is a Docker/runc compatibility failure on the
+current router image, not a successful Prometheus or Grafana deployment. Do
+not open ports, relax the firewall, or report a Grafana dashboard until a
+container runtime remedy is verified. The pre-change backup remains available;
+current rollback planning must account for the installed Docker packages and
+the committed `dockerd` configuration, not just containers.
+
+#### 2026-09-24 JST — Approved reboot retest (executed; failure reproduced)
+
+The operator explicitly approved a DS57U reboot to test whether the Docker/runc
+failure was transient. Immediately before it, `dockerd` and
+`prometheus-node-exporter-lua` were `running`; only `127.0.0.1:9100` listened.
+Prometheus and Grafana were in Docker `Created` state but were not running.
+The approved command was:
+
+```text
+ssh -i .local-ssh\id_ed25519_v2 -o BatchMode=yes root@192.168.1.1 "sync; reboot"
+```
+
+After reconnecting, the router reported uptime 5 minutes, both host services
+were `running`, Docker reported `overlay2`, and only the exporter loopback port
+listened. The reboot cleared the classic-store image cache, so the exact pinned
+images were fetched again before the retest:
+
+```text
+docker pull prom/prometheus:v3.14.0
+docker pull grafana/grafana:13.2.1
+docker compose -f /etc/phase3c/compose.yml up -d --pull=never
+```
+
+Both pulls completed, including Prometheus digest
+`sha256:5ce7540c3c00ef4ab0c9d2c995c6a5b9c421f44b4a115d97a2c7af3b1c21cbb0`
+and Grafana digest
+`sha256:f772d434e8fab0049deb2b1b30abd43342bcfca1537614aa8d36080232cf4283`.
+The final startup attempt created the two containers but failed at the same
+point with the same `runc create failed: invalid rootfs: not an absolute path,
+or a symlink` error. `docker compose ps` was empty afterward. Therefore the
+reboot did not remedy the Docker/runc incompatibility; Prometheus and Grafana
+remain unstarted, and 9090/3000 remain closed.
+
+A subsequent post-restart observation confirmed the router was still up (8
+minutes uptime; load `0.41, 0.30, 0.11`), `dockerd` and the exporter service
+were both `running`, and only `127.0.0.1:9100` listened. The Grafana and
+Prometheus containers were again present only as `Created`, not running. This
+does not change the failed-runtime verdict or expose new monitoring ports.
+
+### 8.3 Phase 3C checklist
+
+- [x] Recorded router storage/RAM capacity, existing listeners, firewall exposure, and package-index limitation
+- [x] Select router-local, loopback-only exporter/Prometheus/Grafana model and migration boundary
+- [x] Create and hash-verify a fresh pre-change backup
+- [x] Refresh package metadata, simulate, and install the selected exporter/Docker footprint
+- [x] Verify exporter binding at `127.0.0.1:9100` and no LAN/WAN metrics listener
+- [x] Record retention, secret handling, migration paths, image versions, and Docker/runc failure evidence
+- [x] Perform the approved router reboot retest; failure reproduced with freshly pulled pinned images
+- [ ] Resolve the router Docker/runc rootfs failure by an evidence-backed runtime/package remedy
+- [ ] Start Prometheus and validate its `up` target at `127.0.0.1:9090`
+- [ ] Start Grafana and validate loopback-only login/dashboard at `127.0.0.1:3000`
+- [ ] Perform a finalized package/configuration rollback procedure or restore test
+
+## 9. PC-to-router LAN Cable Comparison
+
+### 2026-09-24 JST — Current Cat6 baseline (executed)
+
+Topology was unchanged: this PC's ASIX AX88179 USB 3.0-to-Gigabit adapter
+(`Ethernet 2`, IPv4 `192.168.1.157`) was connected by the current Cat6 cable to
+the DS57U `eth1` LAN port (`192.168.1.1`). This was a read-only test; no router
+configuration, package, or service state was changed.
+
+The local adapter-management APIs (`Get-NetAdapter` and
+`Get-CimInstance Win32_NetworkAdapter`) were denied by the current Windows
+session, so the authoritative negotiated-speed and error-counter observations
+come from the router port. `ethtool` is not installed on this OpenWrt image
+(`ash: ethtool: not found`); the supported sysfs values were used instead.
+
+Commands, in execution order:
+
+```text
+ipconfig /all
+ssh -i .local-ssh/id_ed25519_v2 -o IdentitiesOnly=yes -o BatchMode=yes root@192.168.1.1 "date -Iseconds; cat /sys/class/net/eth1/{carrier,speed,duplex}; cat /sys/class/net/eth1/statistics/{rx_bytes,tx_bytes,rx_packets,tx_packets,rx_errors,tx_errors,rx_dropped,tx_dropped}"
+ping.exe -n 10 -w 100 192.168.1.1
+ssh -i .local-ssh/id_ed25519_v2 -o IdentitiesOnly=yes -o BatchMode=yes root@192.168.1.1 "date -Iseconds; cat /sys/class/net/eth1/{carrier,speed,duplex}; cat /sys/class/net/eth1/statistics/{rx_bytes,tx_bytes,rx_packets,tx_packets,rx_errors,tx_errors,rx_dropped,tx_dropped}"
+```
+
+The router baseline at `2026-09-24T08:04:29+00:00` was carrier `1`,
+`1000` Mb/s, `full` duplex, RX/TX bytes `35951742`/`387788768`, RX/TX packets
+`107194`/`292900`, and zero RX/TX errors and drops. After the local test, at
+`2026-09-24T08:07:07+00:00`, carrier and negotiated link remained `1`,
+`1000` Mb/s, and `full`; RX/TX errors and drops remained zero. The final
+RX/TX bytes were `37513390`/`390193808` and packets `110288`/`297264`.
+
+`ping.exe` returned `Sent = 10, Received = 10, Lost = 0 (0% loss)` with
+minimum/maximum/average round-trip time `0` ms (Windows displays the replies
+as `<1ms`). The larger preceding 100-request local ping run also showed only
+`<1ms` or `1ms` replies in its captured excerpt, but its summary was not
+retained; it is not used as the pass criterion.
+
+Verdict: the current Cat6 path negotiated gigabit full duplex and showed no
+router-observed errors, drops, or loss during this short local test. This does
+not rule out an intermittent, load-dependent, PC-adapter, or connector fault.
+The Cat6A comparison remains pending the physical replacement and must repeat
+the same checks before a cable-quality conclusion is made.
+
+### 2026-09-24 JST — Replacement Cat6A comparison (executed)
+
+The user replaced the PC-to-router cable. The topology for this retest was this
+PC's ASIX AX88179 USB 3.0-to-Gigabit adapter (`Ethernet 2`,
+`192.168.1.157`) -- Cat6A -- DS57U `eth1` (`192.168.1.1`). No router
+configuration, package, or service state was changed.
+
+The same read-only command sequence was used: a router sysfs snapshot, then
+`ping.exe -n 10 -w 100 192.168.1.1`, then a second router snapshot. At
+`2026-09-24T08:09:17+00:00`, `eth1` carrier was `1`, speed `1000` Mb/s, and
+duplex `full`; RX/TX byte counters were `38627074`/`392162767`, packet counters
+were `113005`/`300934`, and RX/TX errors and drops were all zero. At
+`2026-09-24T08:09:44+00:00`, carrier/speed/duplex were unchanged; bytes were
+`39323889`/`392418394`, packets were `113929`/`301856`, and all four
+error/drop counters remained zero.
+
+The ping returned `Sent = 10, Received = 10, Lost = 0 (0% loss)` and
+minimum/maximum/average `0` ms (each reply displayed as `<1ms`).
+
+Comparison verdict: both the old Cat6 and replacement Cat6A cables negotiated
+gigabit full duplex, returned the short local ping test without loss, and kept
+the router's observed `eth1` error/drop counters at zero. The replacement does
+not show an observable improvement in this short test, so the old cable is not
+confirmed defective. Intermittent/load-dependent faults and PC-side adapter or
+connector issues remain outside what this test can exclude.

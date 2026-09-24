@@ -1,0 +1,32 @@
+services:
+  prometheus:
+    image: prom/prometheus:v3.14.0
+    network_mode: host
+    restart: unless-stopped
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=15d
+      - --storage.tsdb.retention.size=2GB
+      - --web.listen-address=127.0.0.1:9090
+    volumes:
+      - /etc/phase3c/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - /opt/phase3c/prometheus:/prometheus
+
+  grafana:
+    image: grafana/grafana:13.2.1
+    network_mode: host
+    restart: unless-stopped
+    env_file:
+      - /etc/phase3c/grafana.env
+    environment:
+      GF_SERVER_HTTP_ADDR: 127.0.0.1
+      GF_SERVER_HTTP_PORT: "3000"
+      GF_SECURITY_ADMIN_USER: admin
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+    volumes:
+      - /opt/phase3c/grafana:/var/lib/grafana
+      - /etc/phase3c/grafana/provisioning:/etc/grafana/provisioning:ro
