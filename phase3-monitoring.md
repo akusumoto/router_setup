@@ -463,6 +463,12 @@ data source and an `OpenWrt Overview` dashboard with load, available-memory,
 and `eth0`/`br-lan` traffic panels. `docker compose ... config --quiet` exited
 0 without rendering the secret.
 
+#### 8.1.1 Current Prometheus collection and Grafana visualization inventory
+
+The standalone [Phase 3C monitoring and visualization inventory](phase3c/monitoring-inventory.md)
+defines the collected metrics, scrape/retention limits, and current Grafana
+panels.
+
 Two setup corrections are retained as failures rather than silently omitted.
 The first random-secret command tried `base64`, which is absent on this image,
 and left a 28-byte incomplete environment file; the next `hexdump` format was
@@ -660,6 +666,41 @@ sent JSON with `user` and `password` fields to
 `{"message":"Logged in","redirectUrl":"/"}`. This verifies the actual
 Grafana login endpoint over the LAN listener without printing the credential.
 
+#### 2026-09-26 JST — Restore Grafana provisioning visibility (executed)
+
+The operator reported that the `OpenWrt Overview` dashboard was absent. The
+running Grafana logs identified the cause directly: the bind-mounted
+`/etc/grafana/provisioning/dashboards` and `datasources` directories could not
+be read (`permission denied`). Router inspection showed every parent directory
+from `/etc/phase3c/grafana` through both provisioning directories was
+`drwx------ root root`; the JSON and YAML files themselves were already
+root-readable. Grafana runs as a non-root user, so it could not traverse the
+directories and skipped both dashboard and datasource provisioning.
+
+Before the correction, `sysupgrade -b
+/tmp/phase3c-before-provisioning-perms.tar.gz` exited `0`. The router and
+ignored PC copy `backups/phase3c-before-provisioning-perms.tar.gz` both had
+SHA-256 `3f4b6d4c245d9e695a59d1bad8d74ac7bf9197cbe585d99897a9a88c2ad4fc66`.
+
+The four configuration-only directories were changed from `0700` to `0755`:
+
+```sh
+chmod 0755 /etc/phase3c/grafana \
+  /etc/phase3c/grafana/provisioning \
+  /etc/phase3c/grafana/provisioning/dashboards \
+  /etc/phase3c/grafana/provisioning/datasources
+docker compose -f /etc/phase3c/compose.yml up -d --no-deps --force-recreate grafana
+```
+
+Both `chmod` and the targeted Grafana recreation exited `0`; Prometheus was
+not restarted. The new Grafana log contains `starting to provision dashboards`
+and `finished to provision dashboards`, with no provisioning read error; it
+also records `inserting datasource from configuration name=Prometheus`.
+Grafana remains listening at `192.168.1.1:3000`, and its health endpoint again
+returned database `ok`. If this configuration tree is copied to the router
+again, preserve or reapply these directory execute/read permissions before
+recreating Grafana.
+
 ### 8.3 Phase 3C checklist
 
 - [x] Recorded router storage/RAM capacity, existing listeners, firewall exposure, and package-index limitation
@@ -674,6 +715,7 @@ Grafana login endpoint over the LAN listener without printing the credential.
 - [ ] Validate authenticated Grafana browser login/dashboard at `192.168.1.1:3000` (service health, LAN binding, and provisioning are verified; login probe remains pending)
 - [x] Expose Grafana only at `192.168.1.1:3000` and verify PC-side HTTP access; keep Prometheus/exporter loopback-only
 - [x] Reset the Grafana `admin` credential at the operator's request and verify authenticated login through the LAN listener
+- [x] Restore readable dashboard/datasource provisioning directories and verify Grafana provisioning logs
 - [ ] Confirm authenticated Grafana dashboard use from a smartphone on the same LAN
 - [ ] Perform a finalized package/configuration rollback procedure or restore test
 
