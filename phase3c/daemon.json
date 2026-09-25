@@ -1,4 +1,5 @@
 {
+  "data-root": "/opt/docker",
   "features": {
     "containerd-snapshotter": false
   }

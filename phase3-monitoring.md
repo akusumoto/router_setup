@@ -1,6 +1,6 @@
 # Phase 3 — Incremental Monitoring
 
-Last updated: 2026-09-23  
+Last updated: 2026-09-26
 Status: **Phase 3A and the bounded Phase 3B CLI implementation completed on 2026-09-23 JST. `vnstat` is enabled locally; the deployed Rust router-agent is a one-shot JSON CLI with no listener or service.**
 
 ## 1. Objective and Boundary
@@ -544,6 +544,122 @@ were both `running`, and only `127.0.0.1:9100` listened. The Grafana and
 Prometheus containers were again present only as `Created`, not running. This
 does not change the failed-runtime verdict or expose new monitoring ports.
 
+#### 2026-09-26 JST — Docker data-root remedy and successful stack startup (executed)
+
+The topology remained `ONU -> BUFFALO -> DS57U eth0`, with management through
+the white `eth1` LAN cable. A fresh recovery artifact was made before changing
+the Docker configuration. `sysupgrade -b /tmp/phase3c-before-docker-rootfix.tar.gz`
+exited `0`; its router SHA-256 was
+`3f4b6d4c245d9e695a59d1bad8d74ac7bf9197cbe585d99897a9a88c2ad4fc66`.
+It was copied with `scp -O` to ignored
+`backups/phase3c-before-docker-rootfix.tar.gz`; `certutil` reported the same
+SHA-256.
+
+Read-only diagnosis found that `dockerd` was running from the alternate
+configuration file `/etc/docker/daemon.json`. On this OpenWrt init script, an
+`alt_config_file` replaces (rather than merges with) the generated UCI Docker
+configuration. The alternate file enabled the classic image store but omitted
+`data-root`; consequently Docker used `/var/lib/docker`. On this image,
+`/var` resolves to `/tmp`, so each overlay `MergedDir` began with the symlinked
+path `/var/lib/docker/...`. runc 1.3.6 rejects a rootfs which is a symlink or
+contains one, explaining the reproducible `invalid rootfs` error. The physical
+and intended persistent path `/opt/docker` was present, but had not been active.
+
+The checked-in `phase3c/daemon.json` was changed to retain the classic-store
+workaround and explicitly set the physical data root:
+
+```json
+{
+  "data-root": "/opt/docker",
+  "features": {
+    "containerd-snapshotter": false
+  }
+}
+```
+
+The candidate was copied to `/tmp/phase3c-daemon.json`; both
+`dockerd --validate --config-file=/tmp/phase3c-daemon.json` and the validation
+after copying it to `/etc/docker/daemon.json` returned `configuration OK` and
+exit `0`. `/etc/init.d/dockerd restart` then exited `0`, and `docker info`
+reported `/opt/docker overlay2`. Since the former cache was under the
+RAM-backed default root, the pinned images were deliberately pulled again:
+
+```sh
+docker pull prom/prometheus:v3.14.0
+docker pull grafana/grafana:13.2.1
+docker compose -f /etc/phase3c/compose.yml up -d --pull=never
+```
+
+Both pulls completed with the previously recorded pinned digests. Compose
+created and started both services; its exit status was `0`. After one 30-second
+scrape interval, `docker compose ... ps` showed both containers `Up`.
+`netstat -lnt` showed only `127.0.0.1:9100`, `127.0.0.1:9090`, and
+`127.0.0.1:3000` for the monitoring stack. Prometheus
+`/api/v1/targets` returned the `openwrt` target at `127.0.0.1:9100` with
+`"health":"up"` and no scrape error. Grafana `/api/health` returned
+database `ok`, version `13.2.1`; the provisioned `OpenWrt Overview` dashboard
+file remains present. Root storage was `4.5G` used with `113.2G` free.
+
+Grafana's root-only environment file contains a 32-character administrator
+password, but a BusyBox `wget` Basic-auth API probe returned HTTP `401`.
+`grafana cli admin reset-admin-password` was run inside the running container
+with that value unprinted and reported success; the same probe after a Grafana
+restart still returned `401`. This does not affect the healthy service,
+loopback listener, provisioning files, or Prometheus scrape. It is retained as
+an uncompleted authenticated-browser login/dashboard check rather than being
+claimed as verified. No LAN/WAN monitoring ports were opened.
+
+#### 2026-09-26 JST — LAN-only Grafana browser access (executed)
+
+The operator requested access from the management PC and smartphones on the
+same `192.168.1.0/24` LAN. The exposure decision is intentionally limited to
+Grafana: Prometheus stays on `127.0.0.1:9090` and the exporter stays on
+`127.0.0.1:9100`; neither raw metrics endpoint is reachable by LAN clients.
+Grafana is bound specifically to the current router LAN address
+`192.168.1.1:3000`, rather than to all interfaces. This is not a WAN exposure:
+the observed firewall keeps WAN input `REJECT`, while the existing LAN zone
+input is `ACCEPT`. No firewall or UCI configuration was changed.
+
+Before the change, a new backup was made with
+`sysupgrade -b /tmp/phase3c-before-lan-grafana.tar.gz`; it exited `0`. Its
+router and copied-PC SHA-256 values both were
+`3f4b6d4c245d9e695a59d1bad8d74ac7bf9197cbe585d99897a9a88c2ad4fc66`.
+The copy is ignored at `backups/phase3c-before-lan-grafana.tar.gz`.
+
+`phase3c/compose.yml` now sets
+`GF_SERVER_HTTP_ADDR: 192.168.1.1`. The candidate copied to
+`/tmp/phase3c-compose.yml` passed `docker compose ... config --quiet` with exit
+`0`; the deployed `/etc/phase3c/compose.yml` passed the same validation. The
+following targeted recreation exited `0` and did not restart Prometheus:
+
+```sh
+docker compose -f /etc/phase3c/compose.yml up -d --no-deps --force-recreate grafana
+```
+
+After startup, `netstat -lnt` showed `192.168.1.1:3000` for Grafana, while
+Prometheus and the exporter remained `127.0.0.1:9090` and `127.0.0.1:9100`.
+The router's LAN-address Grafana health request returned exit `0` and database
+`ok`; a PC-side request to
+`http://192.168.1.1:3000/api/health` returned HTTP `200`. Smartphone browser
+access is expected on the same LAN but remains a physical-device check. Use
+`http://192.168.1.1:3000` (not HTTPS) and the Grafana administrator credential;
+never place that credential in project documentation.
+
+#### 2026-09-26 JST — Grafana administrator credential reset and login verification (executed)
+
+At the operator's explicit request, the existing Grafana `admin` account was
+reset to an operator-supplied password. The value was passed directly to
+`grafana cli admin reset-admin-password` inside the running container and was
+redirected away from terminal output; it is deliberately not recorded here or
+in any checked-in file. The command exited `0`.
+
+The first two router-local form probes used URL-encoded POST data and returned
+HTTP `400`; Grafana 13's `/login` endpoint requires JSON. The corrected probe
+sent JSON with `user` and `password` fields to
+`http://192.168.1.1:3000/login`; it exited `0` and returned
+`{"message":"Logged in","redirectUrl":"/"}`. This verifies the actual
+Grafana login endpoint over the LAN listener without printing the credential.
+
 ### 8.3 Phase 3C checklist
 
 - [x] Recorded router storage/RAM capacity, existing listeners, firewall exposure, and package-index limitation
@@ -553,9 +669,12 @@ does not change the failed-runtime verdict or expose new monitoring ports.
 - [x] Verify exporter binding at `127.0.0.1:9100` and no LAN/WAN metrics listener
 - [x] Record retention, secret handling, migration paths, image versions, and Docker/runc failure evidence
 - [x] Perform the approved router reboot retest; failure reproduced with freshly pulled pinned images
-- [ ] Resolve the router Docker/runc rootfs failure by an evidence-backed runtime/package remedy
-- [ ] Start Prometheus and validate its `up` target at `127.0.0.1:9090`
-- [ ] Start Grafana and validate loopback-only login/dashboard at `127.0.0.1:3000`
+- [x] Resolve the Docker/runc rootfs failure by selecting the physical `/opt/docker` data root in the complete alternate Docker configuration
+- [x] Start Prometheus and validate its `up` target at `127.0.0.1:9090`
+- [ ] Validate authenticated Grafana browser login/dashboard at `192.168.1.1:3000` (service health, LAN binding, and provisioning are verified; login probe remains pending)
+- [x] Expose Grafana only at `192.168.1.1:3000` and verify PC-side HTTP access; keep Prometheus/exporter loopback-only
+- [x] Reset the Grafana `admin` credential at the operator's request and verify authenticated login through the LAN listener
+- [ ] Confirm authenticated Grafana dashboard use from a smartphone on the same LAN
 - [ ] Perform a finalized package/configuration rollback procedure or restore test
 
 ## 9. PC-to-router LAN Cable Comparison
