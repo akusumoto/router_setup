@@ -787,3 +787,233 @@ the router's observed `eth1` error/drop counters at zero. The replacement does
 not show an observable improvement in this short test, so the old cable is not
 confirmed defective. Intermittent/load-dependent faults and PC-side adapter or
 connector issues remain outside what this test can exclude.
+
+## 10. Detailed exporter dashboard
+
+### 2026-09-27 JST - Detailed OpenWrt metrics dashboard (executed)
+
+The user requested that all monitorable router parameters be added to the
+existing Prometheus/Grafana stack where possible. Before changing Grafana, the
+installed loopback-only exporter was inspected. Its active collector families
+are conntrack, CPU, entropy, file descriptors, load average, memory, network
+class/state, network-device counters, OpenWrt identity, SELinux state, time,
+and uname. It reports `eth0`, `eth1`, and `br-lan` carrier, negotiated speed,
+traffic, packet, error, and drop counters; it reports CPU time, load, memory,
+conntrack count/limit, process state, uptime, file descriptors, entropy, and
+per-collector success. The exporter was confirmed running. Its endpoint remains
+`127.0.0.1:9100` and was not exposed to the LAN or WAN.
+
+Filesystem capacity, thermal/fan values, DHCP leases, firewall-rule counters,
+routing/MAP-E state, Wi-Fi state, and active latency/loss/throughput probes are
+not emitted by this exporter. The DS57U has `thermal_zone0`, `thermal_zone1`,
+and `thermal_zone2`, but no temperature value was added without a separately
+reviewed collector/probe design. No packet payload, DNS query, client identity,
+or per-flow data was added.
+
+A fresh pre-change configuration archive was created with
+`sysupgrade -b /tmp/phase3c-before-detailed-dashboard.tar.gz`. The router SHA-256
+and the ignored local copy `backups/phase3c-before-detailed-dashboard.tar.gz`
+both were `3f4b6d4c245d9e695a59d1bad8d74ac7bf9197cbe585d99897a9a88c2ad4fc66`.
+
+The new source dashboard is
+`phase3c/grafana/provisioning/dashboards/openwrt-detailed.json`; it adds the
+separate provisioned dashboard **OpenWrt Detailed Metrics**, preserving the
+existing concise overview. The candidate was copied to `/tmp/openwrt-detailed.json`
+and successfully parsed with `jsonfilter -i /tmp/openwrt-detailed.json -e @`.
+It was installed as
+`/etc/phase3c/grafana/provisioning/dashboards/openwrt-detailed.json` with mode
+`0644`. The existing Compose file passed:
+
+```sh
+docker compose -f /etc/phase3c/compose.yml config --quiet
+docker compose -f /etc/phase3c/compose.yml up -d --no-deps --force-recreate grafana
+```
+
+Both commands exited `0`; only `phase3c-grafana-1` was recreated. Prometheus
+and the exporter were not restarted. The router-local Prometheus health endpoint
+returned `Prometheus Server is Healthy.` and Grafana's LAN-address health
+endpoint returned database `ok` for Grafana `13.2.1`. Recent Grafana logs
+contained `starting to provision dashboards` followed by `finished to provision
+dashboards`, with no dashboard parse or provisioning-read error. Grafana still
+listens only at `192.168.1.1:3000`; browser inspection of the new dashboard is
+the remaining user-interface check.
+
+### 2026-09-27 JST - Link-speed display unit (executed)
+
+The user requested a non-ambiguous link-speed display. The **Negotiated
+interface speed** query originally displayed the exporter byte-rate metric in
+`Bps`, which made gigabit links appear as `125 MB/s`. The dashboard now uses:
+
+```promql
+node_network_speed_bytes{device=~"eth0|eth1|br-lan"} * 8 / 1000000
+```
+
+with the Grafana unit `Mbps` and the title **Negotiated interface speed
+(Mb/s)**. Therefore a physical port reports `1000 Mb/s` for 1000BASE-T and
+`100 Mb/s` for 100BASE-TX. `eth0` and `eth1` are physical ports; `br-lan` is a
+virtual bridge and is not a separate cable-negotiation result.
+
+Before deployment, `sysupgrade -b /tmp/phase3c-before-link-speed-unit.tar.gz`
+exited `0`. Its router and ignored local-copy SHA-256 values both were
+`3f4b6d4c245d9e695a59d1bad8d74ac7bf9197cbe585d99897a9a88c2ad4fc66`.
+The source JSON was copied to `/tmp/openwrt-detailed.json`, successfully parsed
+with `jsonfilter`, placed in Grafana's provisioning directory at mode `0644`,
+and applied with:
+
+```sh
+docker compose -f /etc/phase3c/compose.yml up -d --no-deps --force-recreate grafana
+```
+
+The command exited `0` and recreated only Grafana. The first immediate LAN
+health request returned `Operation not permitted` while Grafana was still
+starting; the retry returned database `ok` for Grafana `13.2.1`. Prometheus
+remained healthy throughout. Browser rendering of the adjusted panel remains
+the final user-interface check.
+
+## 11. Hourly OpenWrt Internet-performance monitor
+
+### 2026-09-27 JST - Router-only hourly performance monitoring (executed)
+
+The user requested that the prior OpenWrt performance check run once per hour
+and be shown in Grafana. The historical comparison used three 25 MB samples in
+each direction. For a recurring monitor, this implementation runs one valid
+25,000,000-byte download and one valid 25,000,000-byte upload each hour from
+the DS57U itself: 50 MB/hour (approximately 1.2 GB/day). This limits data use
+and avoids the prior multi-request Cloudflare rate-limit risk while retaining
+the original endpoint and validity conditions.
+
+`curl-8.22.0-r1` (plus `libcurl4` and `libnghttp2-14`) was simulated, then
+installed successfully after `apk update`. The job is
+`/usr/local/sbin/router-performance-hourly`, scheduled by the new root cron
+entry `0 * * * * /usr/local/sbin/router-performance-hourly`. It uses a
+non-blocking lock, calls the Cloudflare 25 MB downlink and synthetic-zero
+uplink endpoints, and accepts each direction only when curl succeeds, HTTP is
+`200`, and the transferred byte count is exactly `25000000`. Rates are
+converted from curl bytes/sec to decimal Mb/s. Invalid directions produce a
+validity gauge of `0` and no throughput value, preventing stale values from
+being displayed as a new sample.
+
+The existing loopback-only Lua exporter was extended with the local
+`router_performance` collector. It reads the job's atomically replaced state at
+`/opt/phase3c/performance/latest` and emits download/upload Mb/s, each
+direction's validity, complete-run validity, and last-run time. It does not add
+a listener. Prometheus continues to scrape `127.0.0.1:9100`; Grafana received
+the provisioned **OpenWrt Performance** dashboard. The dashboard includes a
+throughput time series and validity panels.
+
+A fresh pre-change archive was created using
+`sysupgrade -b /tmp/phase3c-before-hourly-performance.tar.gz`. The router and
+ignored local copy `backups/phase3c-before-hourly-performance.tar.gz` both had
+SHA-256 `3f4b6d4c245d9e695a59d1bad8d74ac7bf9197cbe585d99897a9a88c2ad4fc66`.
+All staged shell and JSON files passed `sh -n` and `jsonfilter` validation.
+
+The initial manually invoked run completed with both directions valid:
+
+```text
+download_mbps=356.846
+upload_mbps=285.811
+download_valid=1
+upload_valid=1
+run_success=1
+```
+
+After the collector was installed, it did not appear until the exporter was
+restarted; this was corrected by restarting only
+`prometheus-node-exporter-lua`. The loopback endpoint then emitted all six
+`router_performance_*` metric families with collector success `1`. After the
+next 30-second scrape, Prometheus returned `router_performance_run_success=1`
+for job `openwrt`. Grafana health returned database `ok`; Prometheus reported
+healthy. Cron reported `running`. The current topology is still
+`ONU -> BUFFALO -> DS57U`, so this is an OpenWrt-originated performance
+indicator through the upstream BUFFALO path, not a direct-ONU test, a
+BUFFALO-path comparison, or a maximum-line-rate certification.
+
+### 2026-09-27 JST - Three-parallel-flow performance update (executed)
+
+At the user's request, the hourly monitor was changed from one download and one
+upload to three concurrent 25 MB downloads followed by three concurrent 25 MB
+uploads. Directions remain separate so that download and upload do not compete
+with each other. A full hourly run therefore transfers 150 MB, approximately
+3.6 GB/day.
+
+For each direction, all three curl requests must succeed, return HTTP `200`,
+and transfer exactly `25000000` bytes. **Internet performance** is the
+aggregate rate calculated as the three valid transfer byte counts divided by
+the longest individual completion time. **Internet performance (single)** is
+the fastest individual flow. A direction with fewer than three valid samples
+has validity `0` and no throughput metric. The local state and exporter now
+also expose each direction's valid-sample count.
+
+A fresh pre-change archive was created at
+`/tmp/phase3c-before-parallel-performance.tar.gz`; its router and ignored
+local-copy SHA-256 values both were
+`225883de65da189405e8501f6d07c153f01502625b6c750e4f0dec3a83d6d01d`.
+The changed script passed `sh -n`, and the Grafana JSON passed `jsonfilter`.
+Only the local exporter was restarted and only Grafana was recreated.
+
+The first three-parallel-flow run completed with all six transfers valid:
+
+| Direction | Internet performance (aggregate) | Internet performance (single) | Valid samples |
+|---|---:|---:|---:|
+| Download | 504.354 Mb/s | 293.360 Mb/s | 3/3 |
+| Upload | 318.311 Mb/s | 170.488 Mb/s | 3/3 |
+
+The loopback exporter emitted the aggregate, fastest-single, validity, and
+valid-sample-count metrics with collector success `1`; Grafana health returned
+database `ok`. These are one current Cloudflare-path observation, not a
+guaranteed Internet line rate.
+
+The Grafana validity panel labels were then finalized as **3 x HTTP 200 / 25
+MB** and Grafana alone was recreated once more. The first two immediate LAN
+health probes returned `Operation not permitted` during Grafana startup. Router
+logs then showed successful dashboard provisioning and the HTTP listener on
+`192.168.1.1:3000`; the final retry returned database `ok` for Grafana `13.2.1`.
+
+### 2026-09-27 JST - Performance-dashboard visual layout (executed)
+
+At the user's request, the performance panel title was shortened from
+**Hourly OpenWrt Internet performance (three parallel flows)** to **Internet
+performance (three parallel flows)** and converted from a time-series panel to
+a Grafana bar chart. The three latest-validity stat panels were removed. A
+second panel, **Internet performance (three parallel flows) gauge**, now shows
+the latest aggregate and fastest-single download/upload values as four gauges.
+
+Before the layout change, `sysupgrade -b
+/tmp/phase3c-before-performance-layout.tar.gz` completed. The router and
+ignored local-copy SHA-256 values both were
+`225883de65da189405e8501f6d07c153f01502625b6c750e4f0dec3a83d6d01d`. The
+candidate JSON parsed successfully with `jsonfilter`, was installed at mode
+`0644`, and only Grafana was recreated. The Grafana LAN health endpoint
+returned database `ok` for version `13.2.1` after normal startup.
+
+### 2026-09-27 JST - Measurement-time-only performance bars (executed)
+
+The user requested that the **Internet performance (three parallel flows)** bar
+chart show bars only at actual hourly measurement time, not every Prometheus
+scrape while the last value is retained. Each of its four PromQL queries now
+returns a value only when `router_performance_last_run_timestamp_seconds`
+differs from the value at the preceding 30-second scrape. The gauge continues
+to query the unfiltered metrics and therefore shows the current latest values.
+
+Before this configuration-only update, `sysupgrade -b
+/tmp/phase3c-before-measurement-bars.tar.gz` completed. The router and ignored
+local-copy SHA-256 values both were
+`225883de65da189405e8501f6d07c153f01502625b6c750e4f0dec3a83d6d01d`. The
+JSON parsed successfully with `jsonfilter`, Grafana alone was recreated, and
+its LAN health endpoint returned database `ok` for version `13.2.1`.
+
+### 2026-09-27 JST - Performance-panel label simplification (executed)
+
+The bar-chart title is now **Internet performance** and the companion gauge
+title is **Internet performance gauge**. In both panels, the four series are
+named **download**, **download (single)**, **upload**, and **upload (single)**.
+The PromQL expressions, measurement-time-only filter on the bar chart, units,
+and panel layout were not changed.
+
+Before this label-only provisioning update, `sysupgrade -b
+/tmp/phase3c-before-performance-labels.tar.gz` completed. The router and
+ignored local-copy SHA-256 values both were
+`225883de65da189405e8501f6d07c153f01502625b6c750e4f0dec3a83d6d01d`. The
+JSON parsed successfully with `jsonfilter`, was installed at mode `0644`, and
+only Grafana was recreated. Its LAN health endpoint returned database `ok` for
+version `13.2.1`.
