@@ -1251,3 +1251,53 @@ The 675.131 Mb/s download snapshot aggregate exceeded the 292.496 Mb/s
 fastest single flow in this verification. The rollback copy remains at
 `/tmp/router-performance-hourly.before-first-completion-snapshot` for this
 boot.
+
+### 2026-09-27 JST - First-completion concurrent-upload aggregate (executed)
+
+The user requested that upload use the same first-completion calculation as
+download. The upload aggregate now equals the completed 25 MB flow plus the
+bytes supplied to each still-running upload at that instant, divided by elapsed
+time since the three uploads started. All three uploads still must complete
+with curl success, HTTP `200`, and exactly `25000000` bytes before the result
+is accepted.
+
+Initial attempts to use `/proc/<curl-pid>/io` read and write counters did not
+include the active upload payload on this OpenWrt kernel; both validation runs
+were successful but undercounted the two unfinished flows. This was corrected
+with one FIFO per upload. A `/dev/zero` producer writes 1 MB blocks into its
+FIFO and atomically updates a progress file only after each block reaches curl.
+At first completion, each active flow contributes that progress value. FIFO
+backpressure bounds the approximation to at most 1 MB per active flow, and the
+temporary directory is removed afterward.
+
+Execution evidence:
+
+```text
+scp -O ... router-performance-hourly.sh root@192.168.1.1:/tmp/router-performance-hourly.sh
+ssh ... sh -n /tmp/router-performance-hourly.sh
+ssh ... cp /tmp/router-performance-hourly.sh /usr/local/sbin/router-performance-hourly
+ssh ... chmod 0755 /usr/local/sbin/router-performance-hourly
+all exit 0
+
+ssh ... /usr/local/sbin/router-performance-hourly
+exit 0
+
+ssh ... cat /opt/phase3c/performance/latest
+download_valid=1
+upload_valid=1
+download_valid_samples=3
+upload_valid_samples=3
+run_success=1
+download_aggregate_mbps=519.481
+download_single_mbps=273.461
+upload_aggregate_mbps=454.545
+upload_single_mbps=196.018
+
+ssh ... find /tmp -maxdepth 1 -type d -name router-performance.*
+no output; temporary directory was removed
+```
+
+The prior first-completion download change remains active. The original
+pre-upload-change script is retained at
+`/tmp/router-performance-hourly.before-upload-first-completion-snapshot` for
+this boot.

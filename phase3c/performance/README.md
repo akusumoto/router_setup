@@ -12,10 +12,14 @@ valid only if all three transfers pass. For downloads, **Internet performance**
 is the total bytes received by all three flows at the instant the first flow
 completes, divided by elapsed time since the three downloads started. It writes
 the three response bodies temporarily under `/tmp` (at most 75 MB) solely to
-sample the two incomplete flows, then removes them. Upload aggregate remains
-the three valid transfer byte counts divided by the longest completion time;
-**Internet performance (single)** is the fastest individual flow. Both are
-stored in decimal Mb/s at `/opt/phase3c/performance/latest`.
+sample the two incomplete flows, then removes them. Upload uses the same
+first-completion snapshot: a completed flow contributes its exact 25 MB, while
+each still-running flow contributes completed 1 MB blocks from its FIFO-fed
+upload stream. A block is counted only after it has passed from the `/dev/zero`
+producer into curl, so the snapshot is accurate within 1 MB per active flow.
+**Internet performance (single)** is
+the fastest individual flow. Both
+are stored in decimal Mb/s at `/opt/phase3c/performance/latest`.
 The job uses a non-blocking lock, so an hourly run is skipped if a prior run is
 still active. Failed directions emit a validity value of `0` and no throughput
 value; Grafana therefore shows both the failure state and a gap rather than

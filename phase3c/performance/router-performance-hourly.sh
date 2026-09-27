@@ -23,11 +23,30 @@ run_download() {
 }
 
 run_upload() {
-    dd if=/dev/zero bs=1000000 count=25 2>/dev/null | \
-        "$curl_bin" --ipv4 --connect-timeout 10 --max-time 120 \
-            --output /dev/null --silent --show-error --data-binary @- \
-            --write-out '%{http_code} %{size_upload} %{speed_upload} %{time_total}' \
-            "$upload_url"
+    progress_file=$1
+    pipe_file=$2
+    (
+        sent=0
+        while [ "$sent" -lt "$bytes" ]; do
+            dd if=/dev/zero bs=1000000 count=1 2>/dev/null
+            sent=$((sent + 1000000))
+            printf '%s\n' "$sent" > "$progress_file.tmp"
+            mv "$progress_file.tmp" "$progress_file"
+        done
+    ) > "$pipe_file" &
+    producer_pid=$!
+    "$curl_bin" --ipv4 --connect-timeout 10 --max-time 120 \
+        --output /dev/null --silent --show-error --data-binary @- \
+        --write-out '%{http_code} %{size_upload} %{speed_upload} %{time_total}' \
+        "$upload_url" < "$pipe_file" &
+    curl_pid=$!
+    if wait "$curl_pid"; then
+        curl_status=0
+    else
+        curl_status=1
+    fi
+    wait "$producer_pid" || true
+    return "$curl_status"
 }
 
 is_decimal() {
@@ -44,6 +63,7 @@ measure_parallel() {
     pids=""
     snapshot_bytes=0
     snapshot_seconds=0
+    start_uptime=$(awk '{ print $1 }' /proc/uptime)
 
     for index in 1 2 3; do
         if [ "$direction" = download ]; then
@@ -56,8 +76,10 @@ measure_parallel() {
                 fi
             ) &
         else
+            mkfifo "$work_dir/$index.pipe"
+            printf '0\n' > "$work_dir/$index.progress"
             (
-                if run_upload > "$work_dir/$index"; then
+                if run_upload "$work_dir/$index.progress" "$work_dir/$index.pipe" > "$work_dir/$index"; then
                     printf '0\n' > "$work_dir/$index.status"
                 else
                     printf '1\n' > "$work_dir/$index.status"
@@ -67,35 +89,36 @@ measure_parallel() {
         pids="$pids $!"
     done
 
-    if [ "$direction" = download ]; then
-        start_uptime=$(awk '{ print $1 }' /proc/uptime)
-        snapshot_taken=0
-        # BusyBox sleep has only whole-second resolution. This short, bounded
-        # poll records the other two response sizes as soon as one curl exits.
-        while [ "$snapshot_taken" -eq 0 ]; do
-            for index in 1 2 3; do
-                if [ -f "$work_dir/$index.status" ]; then
-                    end_uptime=$(awk '{ print $1 }' /proc/uptime)
-                    snapshot_seconds=$(awk -v start="$start_uptime" -v end="$end_uptime" \
-                        'BEGIN { printf "%.2f", end - start }')
-                    for index in 1 2 3; do
-                        size=$(wc -c < "$work_dir/$index.data")
-                        snapshot_bytes=$((snapshot_bytes + size))
-                    done
-                    snapshot_taken=1
-                    break
-                fi
-            done
+    snapshot_taken=0
+    # BusyBox sleep has only whole-second resolution. This short, bounded poll
+    # records each still-running transfer as soon as one curl exits.
+    while [ "$snapshot_taken" -eq 0 ]; do
+        for index in 1 2 3; do
+            if [ -f "$work_dir/$index.status" ]; then
+                end_uptime=$(awk '{ print $1 }' /proc/uptime)
+                snapshot_seconds=$(awk -v start="$start_uptime" -v end="$end_uptime" \
+                    'BEGIN { printf "%.2f", end - start }')
+                for snapshot_index in 1 2 3; do
+                    if [ -f "$work_dir/$snapshot_index.status" ]; then
+                        size=$bytes
+                    elif [ "$direction" = download ]; then
+                        size=$(wc -c < "$work_dir/$snapshot_index.data")
+                    else
+                        size=$(cat "$work_dir/$snapshot_index.progress" 2>/dev/null || printf '0')
+                    fi
+                    snapshot_bytes=$((snapshot_bytes + size))
+                done
+                snapshot_taken=1
+                break
+            fi
         done
-    fi
+    done
 
     for pid in $pids; do
         wait "$pid" || true
     done
 
     valid_samples=0
-    total_bytes=0
-    slowest_seconds=0
     fastest_bps=0
     for index in 1 2 3; do
         result=$(cat "$work_dir/$index" 2>/dev/null || true)
@@ -108,10 +131,6 @@ measure_parallel() {
         if [ "$status" = 0 ] && [ "$code" = 200 ] && [ "$transferred" = "$bytes" ] \
             && is_decimal "$speed" && is_decimal "$seconds" && is_greater "$seconds" 0; then
             valid_samples=$((valid_samples + 1))
-            total_bytes=$((total_bytes + transferred))
-            if is_greater "$seconds" "$slowest_seconds"; then
-                slowest_seconds=$seconds
-            fi
             if is_greater "$speed" "$fastest_bps"; then
                 fastest_bps=$speed
             fi
@@ -120,16 +139,14 @@ measure_parallel() {
 
     rm -f "$work_dir/1" "$work_dir/2" "$work_dir/3" \
         "$work_dir/1.status" "$work_dir/2.status" "$work_dir/3.status" \
-        "$work_dir/1.data" "$work_dir/2.data" "$work_dir/3.data"
+        "$work_dir/1.data" "$work_dir/2.data" "$work_dir/3.data" \
+        "$work_dir/1.progress" "$work_dir/2.progress" "$work_dir/3.progress"
+    rm -f "$work_dir/1.pipe" "$work_dir/2.pipe" "$work_dir/3.pipe"
     rmdir "$work_dir"
 
     if [ "$valid_samples" -eq 3 ]; then
-        aggregate_bytes=$total_bytes
-        aggregate_seconds=$slowest_seconds
-        if [ "$direction" = download ]; then
-            aggregate_bytes=$snapshot_bytes
-            aggregate_seconds=$snapshot_seconds
-        fi
+        aggregate_bytes=$snapshot_bytes
+        aggregate_seconds=$snapshot_seconds
         aggregate_mbps=$(awk -v bytes="$aggregate_bytes" -v seconds="$aggregate_seconds" \
             'BEGIN { printf "%.3f", bytes * 8 / seconds / 1000000 }')
         fastest_mbps=$(awk -v speed="$fastest_bps" \
