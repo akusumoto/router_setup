@@ -1017,3 +1017,237 @@ ignored local-copy SHA-256 values both were
 JSON parsed successfully with `jsonfilter`, was installed at mode `0644`, and
 only Grafana was recreated. Its LAN health endpoint returned database `ok` for
 version `13.2.1`.
+
+### 2026-09-27 JST - One bar per completed hourly run (executed)
+
+The `10:00:20` and `10:00:40` bars were the same single hourly test result,
+not two cron executions. The root cron entry remains `0 * * * *
+/usr/local/sbin/router-performance-hourly`. The previous panel filter compared
+the stored run timestamp with its value `offset 30s`. With the 20-second
+Prometheus scrape cadence, that condition was true at both first and second
+scrapes after the state file changed, producing two bars.
+
+The four bar-chart queries now use the timestamp transition itself:
+
+```promql
+router_performance_download_aggregate_mbps and on (instance, job)
+  (changes(router_performance_last_run_timestamp_seconds[30s]) > 0)
+```
+
+The corresponding upload and fastest-single queries use the same
+`changes(...[30s]) > 0` predicate. A 30-second window includes the prior value
+at the first post-run 20-second scrape but, at the next scrape, contains only
+the new value; therefore it produces one sample per completed run. This changes
+dashboard presentation only: it does not alter the hourly script, cron timing,
+or measurement data.
+
+Execution order and observed results:
+
+```text
+ssh ... sha256sum /etc/phase3c/grafana/provisioning/dashboards/openwrt-performance.json
+c72f00c972f5d66ee8b56370c4c2409d095a66e50b2cb3720ee252d1ef128219  /etc/phase3c/grafana/provisioning/dashboards/openwrt-performance.json
+
+ssh ... cp /etc/phase3c/grafana/provisioning/dashboards/openwrt-performance.json /tmp/openwrt-performance.before-single-bar.json
+exit 0
+
+scp ... phase3c/grafana/provisioning/dashboards/openwrt-performance.json root@192.168.1.1:/tmp/openwrt-performance.json
+ash: /usr/libexec/sftp-server: not found
+scp: Connection closed
+
+scp -O ... phase3c/grafana/provisioning/dashboards/openwrt-performance.json root@192.168.1.1:/tmp/openwrt-performance.json
+exit 0
+
+ssh ... jsonfilter -i /tmp/openwrt-performance.json -e @
+exit 0; output contained all four changes(router_performance_last_run_timestamp_seconds[30s]) > 0 expressions
+
+ssh ... cp /tmp/openwrt-performance.json /etc/phase3c/grafana/provisioning/dashboards/openwrt-performance.json
+exit 0
+
+ssh ... docker compose -f /etc/phase3c/compose.yml up -d --no-deps --force-recreate grafana
+Container phase3c-grafana-1 Recreated
+Container phase3c-grafana-1 Started
+
+ssh ... wget -qO- http://192.168.1.1:3000/api/health
+{ "database": "ok", "version": "13.2.1", ... }
+
+ssh ... curl -s http://127.0.0.1:9090/api/v1/query?query=changes%28router_performance_last_run_timestamp_seconds%5B30s%5D%29%20%3E%200
+{ "status": "success", "data": { "resultType": "vector", "result": [] } }
+```
+
+Local JSON parsing with Node and `git diff --check` both passed. The initial
+SCP attempt used SFTP and failed because this OpenWrt image has no
+`/usr/libexec/sftp-server`; retrying with `scp -O` succeeded. The temporary
+router backup remains at `/tmp/openwrt-performance.before-single-bar.json` for
+this boot. Existing historical duplicate points are retained in Prometheus;
+the next completed hourly run is the runtime confirmation that newly rendered
+bars are singular. The live Prometheus API accepted the new predicate; its
+empty immediate result is expected because no timestamp changed in that
+30-second window.
+
+### 2026-09-27 JST - Restore hourly chart data (executed)
+
+The **Internet performance** chart subsequently displayed **No data** even
+though the gauge showed current values. The collector and current measurements
+were healthy: the live Prometheus query
+`last_over_time(router_performance_download_aggregate_mbps[1h])` returned
+`543.491`. The problem was the previous `changes(...[30s]) > 0` event filter.
+Prometheus scrapes this target every 30 seconds, so its 30-second range often
+contains only one sample; `changes` is then zero and Grafana receives no bars.
+
+The bar chart now uses `last_over_time` for each throughput metric and a
+per-target minimum interval of `1h`, for example:
+
+```promql
+last_over_time(router_performance_download_aggregate_mbps[1h])
+```
+
+This returns the latest value in each one-hour bucket and makes Grafana request
+one point per hour. It restores the historical graph without duplicating each
+retained Prometheus scrape. The gauge queries remain unchanged.
+
+Execution order and observed results:
+
+```text
+ssh ... curl -s http://127.0.0.1:9090/api/v1/query?query=last_over_time%28router_performance_download_aggregate_mbps%5B1h%5D%29
+{ "status": "success", ..., "value": [1790475583.726, "543.491"] }
+
+local node JSON.parse(...openwrt-performance.json...)
+JSON_OK
+local git diff --check
+exit 0
+
+ssh ... cp /etc/phase3c/grafana/provisioning/dashboards/openwrt-performance.json /tmp/openwrt-performance.before-hourly-buckets.json
+exit 0
+
+scp -O ... openwrt-performance.json root@192.168.1.1:/tmp/openwrt-performance.json
+exit 0
+
+ssh ... jsonfilter -i /tmp/openwrt-performance.json -e @
+exit 0; output contained the four last_over_time(...[1h]) expressions and interval "1h"
+
+ssh ... cp /tmp/openwrt-performance.json /etc/phase3c/grafana/provisioning/dashboards/openwrt-performance.json
+exit 0
+
+ssh ... docker compose -f /etc/phase3c/compose.yml up -d --no-deps --force-recreate grafana
+Container phase3c-grafana-1 Recreated
+Container phase3c-grafana-1 Started
+
+ssh ... wget -qO- http://192.168.1.1:3000/api/health
+first probe: Failed to send request: Operation not permitted
+retry: { "database": "ok", "version": "13.2.1", ... }
+```
+
+The initial health probe occurred during normal Grafana startup; the retry
+passed. The temporary rollback copy remains at
+`/tmp/openwrt-performance.before-hourly-buckets.json` for this boot.
+
+### 2026-09-27 JST - Performance line chart with large points (executed)
+
+At the user's request, the **Internet performance** panel was changed from a
+bar chart to a Grafana `timeseries` line chart. The four hourly
+`last_over_time(...[1h])` queries and their one-hour minimum interval were not
+changed. Its lines use linear interpolation, width `1`, no fill or stacking,
+and `showPoints: "always"` with `pointSize: 10`. The **Internet performance
+gauge** panel was not changed.
+
+The candidate JSON passed local Node parsing and `git diff --check`. A router
+rollback copy was made at `/tmp/openwrt-performance.before-line-chart.json`.
+The JSON then passed router-side `jsonfilter`, was installed at
+`/etc/phase3c/grafana/provisioning/dashboards/openwrt-performance.json`, and
+Grafana alone was recreated:
+
+```text
+docker compose -f /etc/phase3c/compose.yml up -d --no-deps --force-recreate grafana
+Container phase3c-grafana-1 Recreated
+Container phase3c-grafana-1 Started
+```
+
+The first immediate LAN health probe returned `Operation not permitted` during
+startup; its retry returned `{ "database": "ok", "version": "13.2.1", ... }`.
+
+### 2026-09-27 JST - Correct time-series point-size schema (executed)
+
+The line chart still rendered Grafana's default 5-pixel points because the
+prior `pointSize: 10` was incorrectly stored in the panel `options` object.
+For a Grafana time-series panel, visual field settings are read from
+`fieldConfig.defaults.custom`. The **Internet performance** panel now stores:
+
+```json
+"custom": {
+  "showPoints": "always",
+  "pointSize": 10
+}
+```
+
+The existing line styling was moved to that same `custom` object, and the
+provisioned dashboard `version` was incremented from `1` to `2` so Grafana
+applies the changed dashboard definition. The hourly queries and the gauge
+panel remain unchanged.
+
+Local JSON parsing verified `pointSize === 10`, `showPoints === "always"`, and
+dashboard version `2`; `git diff --check` passed. A backup was saved to
+`/tmp/openwrt-performance.before-point-size-10.json`. Router-side `jsonfilter`
+then showed the same `custom.pointSize: 10` structure. Grafana alone was
+recreated successfully. Its first immediate LAN health probe returned
+`Operation not permitted` during startup; retry returned
+`{ "database": "ok", "version": "13.2.1", ... }`.
+
+### 2026-09-27 JST - First-completion concurrent-download aggregate (executed)
+
+The user requested that **download** represent total bytes transferred across
+the three concurrent downloads when the first one completes, divided by the
+elapsed time at that instant. For example, at 3 seconds, one complete 25 MB
+file plus 5 MB and 1 MB currently received by the other two becomes
+`(25 + 5 + 1) MB / 3 s`.
+
+`router-performance-hourly` now writes each download to a temporary file under
+`/tmp/router-performance.*`. As soon as the first curl writes its status file,
+the script reads the three file sizes, records the elapsed monotonic
+`/proc/uptime` time, and calculates the download aggregate from that snapshot.
+It then waits for every curl and retains the existing validation: all three
+must exit successfully, return HTTP `200`, and have a final size of exactly
+`25000000` bytes. The temporary files are removed. Upload calculation remains
+unchanged (total three upload bytes divided by the slowest completion time).
+
+The router had 2,363,940 KiB free in `/tmp`, so its at-most-75 MB temporary
+download footprint was safe. Execution order and observed results:
+
+```text
+ssh ... cp /usr/local/sbin/router-performance-hourly /tmp/router-performance-hourly.before-first-completion-snapshot
+exit 0
+
+scp -O ... phase3c/performance/router-performance-hourly.sh root@192.168.1.1:/tmp/router-performance-hourly.sh
+exit 0
+
+ssh ... sh -n /tmp/router-performance-hourly.sh
+exit 0
+
+ssh ... install -m 0755 /tmp/router-performance-hourly.sh /usr/local/sbin/router-performance-hourly
+ash: install: not found
+
+ssh ... cp /tmp/router-performance-hourly.sh /usr/local/sbin/router-performance-hourly
+ssh ... chmod 0755 /usr/local/sbin/router-performance-hourly
+both exit 0
+
+ssh ... /usr/local/sbin/router-performance-hourly
+exit 0
+
+ssh ... cat /opt/phase3c/performance/latest
+download_valid=1
+upload_valid=1
+download_valid_samples=3
+upload_valid_samples=3
+run_success=1
+download_aggregate_mbps=675.131
+download_single_mbps=292.496
+upload_aggregate_mbps=362.696
+upload_single_mbps=267.520
+
+ssh ... find /tmp -maxdepth 1 -type d -name router-performance.*
+no output; temporary directory was removed
+```
+
+The 675.131 Mb/s download snapshot aggregate exceeded the 292.496 Mb/s
+fastest single flow in this verification. The rollback copy remains at
+`/tmp/router-performance-hourly.before-first-completion-snapshot` for this
+boot.

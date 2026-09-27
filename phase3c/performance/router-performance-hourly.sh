@@ -17,7 +17,7 @@ fi
 
 run_download() {
     "$curl_bin" --ipv4 --connect-timeout 10 --max-time 120 \
-        --output /dev/null --silent --show-error \
+        --output "$1" --silent --show-error \
         --write-out '%{http_code} %{size_download} %{speed_download} %{time_total}' \
         "$download_url"
 }
@@ -42,11 +42,14 @@ measure_parallel() {
     direction=$1
     work_dir=$(mktemp -d /tmp/router-performance.XXXXXX)
     pids=""
+    snapshot_bytes=0
+    snapshot_seconds=0
 
     for index in 1 2 3; do
         if [ "$direction" = download ]; then
+            : > "$work_dir/$index.data"
             (
-                if run_download > "$work_dir/$index"; then
+                if run_download "$work_dir/$index.data" > "$work_dir/$index"; then
                     printf '0\n' > "$work_dir/$index.status"
                 else
                     printf '1\n' > "$work_dir/$index.status"
@@ -63,6 +66,28 @@ measure_parallel() {
         fi
         pids="$pids $!"
     done
+
+    if [ "$direction" = download ]; then
+        start_uptime=$(awk '{ print $1 }' /proc/uptime)
+        snapshot_taken=0
+        # BusyBox sleep has only whole-second resolution. This short, bounded
+        # poll records the other two response sizes as soon as one curl exits.
+        while [ "$snapshot_taken" -eq 0 ]; do
+            for index in 1 2 3; do
+                if [ -f "$work_dir/$index.status" ]; then
+                    end_uptime=$(awk '{ print $1 }' /proc/uptime)
+                    snapshot_seconds=$(awk -v start="$start_uptime" -v end="$end_uptime" \
+                        'BEGIN { printf "%.2f", end - start }')
+                    for index in 1 2 3; do
+                        size=$(wc -c < "$work_dir/$index.data")
+                        snapshot_bytes=$((snapshot_bytes + size))
+                    done
+                    snapshot_taken=1
+                    break
+                fi
+            done
+        done
+    fi
 
     for pid in $pids; do
         wait "$pid" || true
@@ -94,11 +119,18 @@ measure_parallel() {
     done
 
     rm -f "$work_dir/1" "$work_dir/2" "$work_dir/3" \
-        "$work_dir/1.status" "$work_dir/2.status" "$work_dir/3.status"
+        "$work_dir/1.status" "$work_dir/2.status" "$work_dir/3.status" \
+        "$work_dir/1.data" "$work_dir/2.data" "$work_dir/3.data"
     rmdir "$work_dir"
 
     if [ "$valid_samples" -eq 3 ]; then
-        aggregate_mbps=$(awk -v bytes="$total_bytes" -v seconds="$slowest_seconds" \
+        aggregate_bytes=$total_bytes
+        aggregate_seconds=$slowest_seconds
+        if [ "$direction" = download ]; then
+            aggregate_bytes=$snapshot_bytes
+            aggregate_seconds=$snapshot_seconds
+        fi
+        aggregate_mbps=$(awk -v bytes="$aggregate_bytes" -v seconds="$aggregate_seconds" \
             'BEGIN { printf "%.3f", bytes * 8 / seconds / 1000000 }')
         fastest_mbps=$(awk -v speed="$fastest_bps" \
             'BEGIN { printf "%.3f", speed * 8 / 1000000 }')

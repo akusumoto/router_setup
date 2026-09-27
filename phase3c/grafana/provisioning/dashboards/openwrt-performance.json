@@ -4,18 +4,18 @@
   "panels": [
     {
       "datasource": { "type": "prometheus", "uid": "" },
-      "fieldConfig": { "defaults": { "unit": "Mbps", "decimals": 1 }, "overrides": [] },
+      "fieldConfig": { "defaults": { "unit": "Mbps", "decimals": 1, "custom": { "drawStyle": "line", "lineInterpolation": "linear", "lineWidth": 1, "fillOpacity": 0, "showPoints": "always", "pointSize": 10, "spanNulls": false, "stacking": { "mode": "none", "group": "A" } } }, "overrides": [] },
       "gridPos": { "h": 12, "w": 24, "x": 0, "y": 0 },
       "id": 1,
       "targets": [
-        { "expr": "router_performance_download_aggregate_mbps and on (instance, job) (router_performance_last_run_timestamp_seconds != router_performance_last_run_timestamp_seconds offset 30s)", "legendFormat": "download", "refId": "A" },
-        { "expr": "router_performance_upload_aggregate_mbps and on (instance, job) (router_performance_last_run_timestamp_seconds != router_performance_last_run_timestamp_seconds offset 30s)", "legendFormat": "upload", "refId": "B" },
-        { "expr": "router_performance_download_single_mbps and on (instance, job) (router_performance_last_run_timestamp_seconds != router_performance_last_run_timestamp_seconds offset 30s)", "legendFormat": "download (single)", "refId": "C" },
-        { "expr": "router_performance_upload_single_mbps and on (instance, job) (router_performance_last_run_timestamp_seconds != router_performance_last_run_timestamp_seconds offset 30s)", "legendFormat": "upload (single)", "refId": "D" }
+        { "expr": "last_over_time(router_performance_download_aggregate_mbps[1h])", "interval": "1h", "legendFormat": "download", "refId": "A" },
+        { "expr": "last_over_time(router_performance_upload_aggregate_mbps[1h])", "interval": "1h", "legendFormat": "upload", "refId": "B" },
+        { "expr": "last_over_time(router_performance_download_single_mbps[1h])", "interval": "1h", "legendFormat": "download (single)", "refId": "C" },
+        { "expr": "last_over_time(router_performance_upload_single_mbps[1h])", "interval": "1h", "legendFormat": "upload (single)", "refId": "D" }
       ],
-      "options": { "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true }, "orientation": "auto", "showValue": "auto", "stacking": "none", "tooltip": { "mode": "single", "sort": "none" } },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "single", "sort": "none" } },
       "title": "Internet performance",
-      "type": "barchart"
+      "type": "timeseries"
     },
     {
       "datasource": { "type": "prometheus", "uid": "" },
@@ -37,5 +37,5 @@
   "tags": ["openwrt", "phase3c", "performance"],
   "title": "OpenWrt Performance",
   "uid": "openwrt-performance",
-  "version": 1
+  "version": 2
 }

@@ -8,10 +8,14 @@ approximately 3.6 GB per day.
 
 A direction is valid only when `curl` exits successfully, the HTTP status is
 `200`, and the transferred byte count is exactly `25,000,000`. A direction is
-valid only if all three transfers pass. The aggregate **Internet performance**
-rate is the three valid transfer byte counts divided by the longest individual
-completion time; **Internet performance (single)** is the fastest individual
-flow. Both are stored in decimal Mb/s at `/opt/phase3c/performance/latest`.
+valid only if all three transfers pass. For downloads, **Internet performance**
+is the total bytes received by all three flows at the instant the first flow
+completes, divided by elapsed time since the three downloads started. It writes
+the three response bodies temporarily under `/tmp` (at most 75 MB) solely to
+sample the two incomplete flows, then removes them. Upload aggregate remains
+the three valid transfer byte counts divided by the longest completion time;
+**Internet performance (single)** is the fastest individual flow. Both are
+stored in decimal Mb/s at `/opt/phase3c/performance/latest`.
 The job uses a non-blocking lock, so an hourly run is skipped if a prior run is
 still active. Failed directions emit a validity value of `0` and no throughput
 value; Grafana therefore shows both the failure state and a gap rather than
@@ -21,6 +25,10 @@ stale throughput.
 It adds `router_performance_*` gauges without adding a listener. Prometheus
 scrapes them through the existing `127.0.0.1:9100` target, and the **OpenWrt
 Performance** Grafana dashboard displays throughput and validity.
+
+The bar chart reduces each metric to its last value in a one-hour range and
+uses a one-hour minimum query interval. This emits one bar per hourly bucket,
+rather than repeating retained values at every Prometheus scrape.
 
 This measures the current OpenWrt-to-Internet path, which presently traverses
 BUFFALO upstream. It is an hourly indicator, not a line-rate certification or
