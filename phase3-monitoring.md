@@ -1340,3 +1340,205 @@ Both JSON files passed local Node parsing and `git diff --check`. They were
 copied to `/etc/phase3c/grafana/provisioning/dashboards/`, and Grafana alone
 was recreated. The first health probe returned `Operation not permitted` during
 startup; retry returned `{ "database": "ok", "version": "13.2.1", ... }`.
+
+### 2026-09-27 JST - Active IPv4 DS57U LAN-device count (executed)
+
+The previous `router_lan_connected_devices` value was a neighbor-cache count.
+It treated `STALE` entries as connected, so it could remain nonzero after a PC
+was powered down. It has been replaced by the distinct
+`router_lan_active_devices` gauge. A new metric name prevents the old
+cache-based history from being interpreted as active-presence history.
+
+The updated collector gathers candidate IPv4 addresses from both `br-lan`
+neighbor rows and `/tmp/dhcp.leases`. For each candidate it sends one
+`arping -I br-lan -c 1 -w 1` probe, then counts the unique MAC addresses that
+actually reply. The probe timeout is one second. This is an active,
+Layer-2 presence measurement and does not retain an offline device merely
+because its old neighbor entry still exists. It does not count IPv6-only
+clients, nor IPv4 clients with neither a DHCP lease nor a remembered neighbor
+address; the Grafana panel explicitly states those boundaries. It neither
+records client identities nor packet payloads.
+
+The exact command sequence and observed results were:
+
+```text
+ssh ... "which arping; which ping; which bridge; ip addr show dev br-lan; ip neigh show dev br-lan"
+exit 0
+output: /bin/ping only; br-lan is 192.168.1.1/24
+
+ssh ... "apk add arping"
+exit 1
+output: arping (no such package)
+
+ssh ... "apk search arping; apk search iputils; apk search ndisc"
+exit 0
+output: iputils-arping-20250605-r1
+
+ssh ... "apk add iputils-arping"
+exit 0
+output: Installing iputils-arping (20250605-r1); OK: 273.8 MiB in 263 packages
+
+scp -O ... router-connected-devices.lua root@192.168.1.1:/tmp/router_connected_devices.lua
+scp -O ... openwrt-detailed.json root@192.168.1.1:/tmp/openwrt-detailed.json
+exit 0
+
+ssh ... "lua /tmp/router_connected_devices.lua; cp /usr/lib/lua/prometheus-collectors/router_connected_devices.lua /tmp/router_connected_devices.before-active-probe.lua; cp /tmp/router_connected_devices.lua /usr/lib/lua/prometheus-collectors/router_connected_devices.lua; /etc/init.d/prometheus-node-exporter-lua restart"
+exit 0
+
+ssh ... "wget -qO /tmp/router-active-device-metrics http://127.0.0.1:9100/metrics; grep router_lan /tmp/router-active-device-metrics; grep router_connected_devices /tmp/router-active-device-metrics"
+exit 0
+# TYPE router_lan_active_devices gauge
+router_lan_active_devices 1
+node_scrape_collector_duration_seconds{collector="router_connected_devices"} 1.0760779380798
+node_scrape_collector_success{collector="router_connected_devices"} 1
+
+ssh ... "wget -qO- http://127.0.0.1:9090/api/v1/query?query=router_lan_active_devices"
+exit 0
+output: success; value 1 for job=openwrt, instance=127.0.0.1:9100
+
+ssh ... "cp /etc/phase3c/grafana/provisioning/dashboards/openwrt-detailed.json /tmp/openwrt-detailed.before-active-devices.json; cp /tmp/openwrt-detailed.json /etc/phase3c/grafana/provisioning/dashboards/openwrt-detailed.json; docker compose -f /etc/phase3c/compose.yml up -d --no-deps --force-recreate grafana"
+exit 0
+output: phase3c-grafana-1 recreated and started; dashboard provisioning finished
+
+ssh ... "wget -qO- http://192.168.1.1:3000/api/health; grep router_lan_active_devices /etc/phase3c/grafana/provisioning/dashboards/openwrt-detailed.json; sha256sum /usr/lib/lua/prometheus-collectors/router_connected_devices.lua /etc/phase3c/grafana/provisioning/dashboards/openwrt-detailed.json"
+exit 0
+output: Grafana database ok (13.2.1); panel title "Active IPv4 devices on DS57U LAN"; collector df9ccf02d5495ead0323a9e7fba138171b0f9528fc60b2ac99453d31d4da2f06; dashboard 4416cfc5390a1583556f3999cd1bfcfae55f7a8d28d1dfa35bc9c96c6e9c2c7b
+```
+
+The router-side rollback copies are
+`/tmp/router_connected_devices.before-active-probe.lua` and
+`/tmp/openwrt-detailed.before-active-devices.json` for this boot. Restore the
+respective file, restart `prometheus-node-exporter-lua` for the collector, and
+recreate Grafana alone for the dashboard. Removing `iputils-arping` is a
+separate rollback action only after the prior collector has been restored.
+
+### 2026-09-28 JST - Link-speed state timeline (executed)
+
+The **Negotiated interface speed (Mb/s)** panel in **OpenWrt Detailed Metrics**
+is now a Grafana `state-timeline`. It uses the existing speed query and retains
+one timeline row per `eth0`, `eth1`, and `br-lan` series. Exact mappings are
+`1000` to green **1000Mbps** and `100` to red **100Mbps**. The field default is
+fixed gray, so every other value is gray. The dashboard version advanced from
+`3` to `4`.
+
+```text
+node -p "require('./phase3c/grafana/provisioning/dashboards/openwrt-detailed.json').version"
+exit 0
+
+git diff --check
+exit 0
+
+scp -O -i .local-ssh/id_ed25519_v2 phase3c/grafana/provisioning/dashboards/openwrt-detailed.json root@192.168.1.1:/tmp/openwrt-detailed.json
+exit 0
+
+ssh -i .local-ssh/id_ed25519_v2 -o BatchMode=yes -o ConnectTimeout=10 root@192.168.1.1 "cp /etc/phase3c/grafana/provisioning/dashboards/openwrt-detailed.json /tmp/openwrt-detailed.before-link-state-timeline.json; cp /tmp/openwrt-detailed.json /etc/phase3c/grafana/provisioning/dashboards/openwrt-detailed.json; docker compose -f /etc/phase3c/compose.yml up -d --no-deps --force-recreate grafana"
+exit 0
+output: phase3c-grafana-1 recreated and started; dashboard provisioning finished
+
+ssh -i .local-ssh/id_ed25519_v2 -o BatchMode=yes -o ConnectTimeout=10 root@192.168.1.1 "wget -qO- http://192.168.1.1:3000/api/health; grep state-timeline /etc/phase3c/grafana/provisioning/dashboards/openwrt-detailed.json; grep 1000Mbps /etc/phase3c/grafana/provisioning/dashboards/openwrt-detailed.json; grep 100Mbps /etc/phase3c/grafana/provisioning/dashboards/openwrt-detailed.json; sha256sum /etc/phase3c/grafana/provisioning/dashboards/openwrt-detailed.json"
+exit 0
+output: Grafana database ok (13.2.1); panel type state-timeline; fixed gray default; 1000 green 1000Mbps; 100 red 100Mbps; SHA-256 e18b187cff91f98265bf0e79d3a4d73e659b4deafc7451f5ac8750a9d4b9ad12
+```
+
+The boot-local rollback file is
+`/tmp/openwrt-detailed.before-link-state-timeline.json`. Restore it to
+`/etc/phase3c/grafana/provisioning/dashboards/openwrt-detailed.json` and
+recreate Grafana alone to revert this panel.
+
+### 2026-09-28 JST - Rename link-speed panel (executed)
+
+The state-timeline panel title was changed from **Negotiated interface speed
+(Mb/s)** to **NIC link speed state**. Its query, value mappings, colors, and
+timeline configuration are unchanged. The provisioned dashboard version
+advanced from `4` to `5`.
+
+```text
+git diff --check
+exit 0
+
+scp -O -i .local-ssh/id_ed25519_v2 phase3c/grafana/provisioning/dashboards/openwrt-detailed.json root@192.168.1.1:/tmp/openwrt-detailed.json
+exit 0
+
+ssh -i .local-ssh/id_ed25519_v2 -o BatchMode=yes -o ConnectTimeout=10 root@192.168.1.1 "cp /etc/phase3c/grafana/provisioning/dashboards/openwrt-detailed.json /tmp/openwrt-detailed.before-nic-link-speed-title.json; cp /tmp/openwrt-detailed.json /etc/phase3c/grafana/provisioning/dashboards/openwrt-detailed.json; docker compose -f /etc/phase3c/compose.yml up -d --no-deps --force-recreate grafana"
+exit 0
+output: phase3c-grafana-1 recreated and started; provisioning completed
+
+ssh ... "wget -qO- http://192.168.1.1:3000/api/health; grep \"NIC link speed state\" /etc/phase3c/grafana/provisioning/dashboards/openwrt-detailed.json; sha256sum /etc/phase3c/grafana/provisioning/dashboards/openwrt-detailed.json"
+exit 0
+output: Grafana database ok (13.2.1); the shell split the quoted grep argument, but the displayed dashboard row contained title "NIC link speed state"; SHA-256 e9b3293b14a1e49df563ccca39bb5538f2117b73dbc4a4c326a3deb305c210ae
+
+ssh -i .local-ssh/id_ed25519_v2 -o BatchMode=yes -o ConnectTimeout=10 root@192.168.1.1 "grep NIC /etc/phase3c/grafana/provisioning/dashboards/openwrt-detailed.json"
+exit 0
+output: dashboard row contains title "NIC link speed state"
+```
+
+The boot-local rollback file is
+`/tmp/openwrt-detailed.before-nic-link-speed-title.json`. Restore it to the
+provisioned dashboard path and recreate Grafana alone to revert the title.
+
+### 2026-09-28 JST - Active connections through router (executed)
+
+Added the **Active connections through router** stat panel to **OpenWrt
+Detailed Metrics**. It displays the latest `node_nf_conntrack_entries` value:
+the number of currently tracked conntrack network flows on the DS57U. It is not
+a count of distinct devices or application sessions. The pre-existing
+**Conntrack table used** percentage panel remains unchanged. Dashboard version
+advanced from `5` to `6`.
+
+```text
+ssh -i .local-ssh/id_ed25519_v2 -o BatchMode=yes -o ConnectTimeout=10 root@192.168.1.1 "wget -qO- http://127.0.0.1:9090/api/v1/query?query=node_nf_conntrack_entries"
+exit 0
+output: success; current value 91
+
+git diff --check
+exit 0
+
+scp -O -i .local-ssh/id_ed25519_v2 phase3c/grafana/provisioning/dashboards/openwrt-detailed.json root@192.168.1.1:/tmp/openwrt-detailed.json
+exit 0
+
+ssh -i .local-ssh/id_ed25519_v2 -o BatchMode=yes -o ConnectTimeout=10 root@192.168.1.1 "cp /etc/phase3c/grafana/provisioning/dashboards/openwrt-detailed.json /tmp/openwrt-detailed.before-active-connections.json; cp /tmp/openwrt-detailed.json /etc/phase3c/grafana/provisioning/dashboards/openwrt-detailed.json; docker compose -f /etc/phase3c/compose.yml up -d --no-deps --force-recreate grafana"
+exit 0
+output: phase3c-grafana-1 recreated and started; provisioning completed
+
+ssh -i .local-ssh/id_ed25519_v2 -o BatchMode=yes -o ConnectTimeout=10 root@192.168.1.1 "wget -qO- http://192.168.1.1:3000/api/health; grep node_nf_conntrack_entries /etc/phase3c/grafana/provisioning/dashboards/openwrt-detailed.json; wget -qO- http://127.0.0.1:9090/api/v1/query?query=node_nf_conntrack_entries; sha256sum /etc/phase3c/grafana/provisioning/dashboards/openwrt-detailed.json"
+exit 0
+output: Grafana database ok (13.2.1); panel query and description present; current value 99; SHA-256 8427f514bedcc0e5d201099ee6223300450f833c6efd8bed450a437c308b5072
+```
+
+The boot-local rollback file is
+`/tmp/openwrt-detailed.before-active-connections.json`. Restore it to the
+provisioned dashboard path and recreate Grafana alone to revert this panel.
+
+### 2026-09-28 JST - Active-connections line chart and app boundary (executed)
+
+The **Active connections through router** panel is now a line chart with
+visible points and the `connections` legend, rather than a stat. It retains
+the `node_nf_conntrack_entries` query and displays active conntrack flows over
+time.
+
+Per-application unique connection monitoring was not added. The existing
+exporter supplies conntrack network-flow metadata, not reliable application
+identity. Inferring applications from ports would be incorrect, and encrypted
+traffic prevents accurate classification without a separately reviewed DPI
+design. The panel and inventory explicitly state this boundary.
+
+```text
+git diff --check
+exit 0
+
+scp -O -i .local-ssh/id_ed25519_v2 phase3c/grafana/provisioning/dashboards/openwrt-detailed.json root@192.168.1.1:/tmp/openwrt-detailed.json
+exit 0
+
+ssh -i .local-ssh/id_ed25519_v2 -o BatchMode=yes -o ConnectTimeout=10 root@192.168.1.1 "cp /etc/phase3c/grafana/provisioning/dashboards/openwrt-detailed.json /tmp/openwrt-detailed.before-active-connections-line.json; cp /tmp/openwrt-detailed.json /etc/phase3c/grafana/provisioning/dashboards/openwrt-detailed.json; docker compose -f /etc/phase3c/compose.yml up -d --no-deps --force-recreate grafana"
+exit 0
+output: phase3c-grafana-1 recreated and started; provisioning completed
+
+ssh -i .local-ssh/id_ed25519_v2 -o BatchMode=yes -o ConnectTimeout=10 root@192.168.1.1 "wget -qO- http://192.168.1.1:3000/api/health; grep app-specific /etc/phase3c/grafana/provisioning/dashboards/openwrt-detailed.json; wget -qO- http://127.0.0.1:9090/api/v1/query?query=node_nf_conntrack_entries; sha256sum /etc/phase3c/grafana/provisioning/dashboards/openwrt-detailed.json"
+exit 0
+output: Grafana database ok (13.2.1); panel is a timeseries with the app-specific boundary; current conntrack value 51; SHA-256 02a1f0e8ea6edf2a524f9b1ef3a3bb72e2b125b7ac942c1813273ed08ec06774
+```
+
+The boot-local rollback file is
+`/tmp/openwrt-detailed.before-active-connections-line.json`. Restore it to the
+provisioned dashboard path and recreate Grafana alone to restore the stat
+panel.
