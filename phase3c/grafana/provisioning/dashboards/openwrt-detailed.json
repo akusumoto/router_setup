@@ -17,11 +17,12 @@
     { "datasource": { "type": "prometheus", "uid": "" }, "fieldConfig": { "defaults": { "unit": "short", "decimals": 0 }, "overrides": [] }, "gridPos": { "h": 8, "w": 8, "x": 8, "y": 34 }, "id": 13, "targets": [{ "expr": "increase(node_network_carrier_down_changes_total{device=~\"eth0|eth1|br-lan\"}[24h])", "legendFormat": "{{device}}", "refId": "A" }], "title": "Carrier-down events (24h)", "type": "stat" },
     { "datasource": { "type": "prometheus", "uid": "" }, "fieldConfig": { "defaults": { "unit": "percent", "decimals": 2 }, "overrides": [] }, "gridPos": { "h": 8, "w": 8, "x": 16, "y": 34 }, "id": 14, "targets": [{ "expr": "100 * node_filefd_allocated / node_filefd_maximum", "refId": "A" }], "title": "File descriptors used", "type": "stat" },
     { "datasource": { "type": "prometheus", "uid": "" }, "fieldConfig": { "defaults": { "unit": "short", "decimals": 0 }, "overrides": [] }, "gridPos": { "h": 8, "w": 12, "x": 0, "y": 42 }, "id": 15, "targets": [{ "expr": "node_entropy_available_bits", "refId": "A" }], "title": "Available entropy", "type": "stat" },
-    { "datasource": { "type": "prometheus", "uid": "" }, "fieldConfig": { "defaults": { "unit": "short", "decimals": 0 }, "overrides": [] }, "gridPos": { "h": 8, "w": 12, "x": 12, "y": 42 }, "id": 16, "targets": [{ "expr": "min(node_scrape_collector_success)", "refId": "A" }, { "expr": "up{job=\"openwrt\"}", "refId": "B" }], "title": "Exporter / scrape health (1 = healthy)", "type": "stat" }
+    { "datasource": { "type": "prometheus", "uid": "" }, "fieldConfig": { "defaults": { "unit": "short", "decimals": 0 }, "overrides": [] }, "gridPos": { "h": 8, "w": 12, "x": 12, "y": 42 }, "id": 16, "targets": [{ "expr": "min(node_scrape_collector_success)", "refId": "A" }, { "expr": "up{job=\"openwrt\"}", "refId": "B" }], "title": "Exporter / scrape health (1 = healthy)", "type": "stat" },
+    { "datasource": { "type": "prometheus", "uid": "" }, "fieldConfig": { "defaults": { "unit": "short", "decimals": 0, "custom": { "drawStyle": "line", "lineInterpolation": "linear", "lineWidth": 1, "fillOpacity": 0, "showPoints": "always", "pointSize": 5, "spanNulls": false, "stacking": { "mode": "none", "group": "A" } } }, "overrides": [] }, "gridPos": { "h": 10, "w": 24, "x": 0, "y": 50 }, "id": 17, "options": { "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "single", "sort": "none" } }, "targets": [{ "expr": "router_lan_connected_devices", "legendFormat": "devices", "refId": "A" }], "title": "Connected devices on DS57U LAN", "type": "timeseries" }
   ],
   "schemaVersion": 41,
   "tags": ["openwrt", "phase3c", "detailed"],
   "title": "OpenWrt Detailed Metrics",
   "uid": "openwrt-detailed",
-  "version": 1
+  "version": 2
 }

@@ -1301,3 +1301,42 @@ The prior first-completion download change remains active. The original
 pre-upload-change script is retained at
 `/tmp/router-performance-hourly.before-upload-first-completion-snapshot` for
 this boot.
+
+### 2026-09-27 JST - DS57U connected-device count (executed)
+
+Added the loopback-only Lua collector
+`router_lan_connected_devices`. It runs `ip neigh show dev br-lan`, accepts
+entries with an `lladdr` except `FAILED` and `INCOMPLETE`, and counts unique
+MAC addresses. This deduplicates IPv4 and IPv6 neighbor rows for the same
+device. It counts devices currently visible directly to the DS57U; it does not
+count clients only visible to the upstream BUFFALO or Wi-Fi associations hosted
+elsewhere.
+
+The collector parsed successfully with the installed `lua` runtime (this image
+does not include `luac`), was installed at
+`/usr/lib/lua/prometheus-collectors/router_connected_devices.lua`, and only
+`prometheus-node-exporter-lua` was restarted. Its loopback endpoint emitted:
+
+```text
+# TYPE router_lan_connected_devices gauge
+router_lan_connected_devices 2
+```
+
+The **OpenWrt Performance** provisioned dashboard now includes the
+**Connected devices on DS57U LAN** stat panel with PromQL
+`router_lan_connected_devices`; its version was incremented to `3`. Grafana
+alone was recreated to load the panel.
+
+### 2026-09-27 JST - Move connected-device graph to Detailed Metrics (executed)
+
+At the user's request, **Connected devices on DS57U LAN** was removed from
+**OpenWrt Performance** and added to **OpenWrt Detailed Metrics** as a
+time-series line chart. It retains the `router_lan_connected_devices` query,
+linear line styling, and visible points; the collector and metric semantics are
+unchanged. Provisioned dashboard versions were advanced to `4` for Performance
+and `2` for Detailed Metrics.
+
+Both JSON files passed local Node parsing and `git diff --check`. They were
+copied to `/etc/phase3c/grafana/provisioning/dashboards/`, and Grafana alone
+was recreated. The first health probe returned `Operation not permitted` during
+startup; retry returned `{ "database": "ok", "version": "13.2.1", ... }`.
