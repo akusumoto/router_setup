@@ -1542,3 +1542,137 @@ The boot-local rollback file is
 `/tmp/openwrt-detailed.before-active-connections-line.json`. Restore it to the
 provisioned dashboard path and recreate Grafana alone to restore the stat
 panel.
+
+### 2026-09-28 JST - WAN latency and packet-loss probe (executed)
+
+To investigate congestion/path symptoms that cannot be inferred from interface
+byte counters alone, added the loopback-only Lua collector
+`router_wan_probe`. It sends exactly three ICMP echo requests with a one-second
+timeout to the fixed public target `1.1.1.1` on every 30-second exporter scrape.
+It emits `router_wan_probe_success` (one or more replies),
+`router_wan_probe_packet_loss_ratio`, and, when replies provide an average,
+`router_wan_probe_rtt_seconds`; all three carry only `target="1.1.1.1"`.
+It does not inspect payloads, collect DNS data, identify clients, classify
+applications, or measure available throughput. ICMP treatment can differ from
+application traffic, so these metrics are a single-target reachability/path
+indicator rather than a line-rate or user-experience certification.
+
+Pre-change compatibility checks found `/bin/ping` and the Lua collector
+directory. The DS57U has thermal-zone directories but no readable `temp` or
+`type` files below them, so temperature was deliberately not exported. The
+pre-change probe returned three replies, zero loss, and `4.095 ms` average RTT.
+
+The exact command sequence and observed results were:
+
+```text
+ssh -i .local-ssh/id_ed25519_v2 -o BatchMode=yes root@192.168.1.1 "printf 'PING='; command -v ping; printf 'WGET='; command -v wget; printf 'THERMAL='; find /sys/class/thermal -maxdepth 2 -type f \( -name temp -o -name type \) -print -exec cat {} \;; printf 'COLLECTORS='; ls /usr/lib/lua/prometheus-collectors; printf 'METRICS='; wget -qO- http://127.0.0.1:9100/metrics | grep -E 'node_nf_conntrack_entries|node_network_(receive|transmit)_(errs|drop)_total|node_cpu_seconds_total' | head -20"
+exit 0
+output excerpt: PING=/bin/ping; WGET=/usr/bin/wget; collector directory includes router_connected_devices.lua and router_performance.lua; no thermal value files printed
+
+ssh -i .local-ssh/id_ed25519_v2 -o BatchMode=yes root@192.168.1.1 "/bin/ping -n -c 3 -W 1 1.1.1.1"
+exit 0
+output: 3 packets transmitted, 3 packets received, 0% packet loss; round-trip min/avg/max = 3.863/4.095/4.408 ms
+
+scp -O -i .local-ssh/id_ed25519_v2 -o BatchMode=yes phase3c/wan-probe/router-wan-probe.lua root@192.168.1.1:/tmp/router_wan_probe.lua
+scp -O -i .local-ssh/id_ed25519_v2 -o BatchMode=yes phase3c/grafana/provisioning/dashboards/openwrt-detailed.json root@192.168.1.1:/tmp/openwrt-detailed.wan-probe.json
+both exit 0
+
+ssh -i .local-ssh/id_ed25519_v2 -o BatchMode=yes root@192.168.1.1 "lua /tmp/router_wan_probe.lua && cp /usr/lib/lua/prometheus-collectors/router_wan_probe.lua /tmp/router_wan_probe.before-20260928.lua 2>/dev/null || true; cp /tmp/router_wan_probe.lua /usr/lib/lua/prometheus-collectors/router_wan_probe.lua && /etc/init.d/prometheus-node-exporter-lua restart"
+exit 0
+
+ssh -i .local-ssh/id_ed25519_v2 -o BatchMode=yes root@192.168.1.1 "wget -qO /tmp/router-wan-probe-metrics http://127.0.0.1:9100/metrics && grep -E 'router_wan_probe|node_scrape_collector_(success|duration_seconds).*router_wan_probe' /tmp/router-wan-probe-metrics"
+exit 0
+output: success=1; packet_loss_ratio=0; rtt_seconds=0.004125; collector duration=2.006453037262; collector success=1
+
+ssh -i .local-ssh/id_ed25519_v2 -o BatchMode=yes root@192.168.1.1 "cp /etc/phase3c/grafana/provisioning/dashboards/openwrt-detailed.json /tmp/openwrt-detailed.before-wan-probe.json && cp /tmp/openwrt-detailed.wan-probe.json /etc/phase3c/grafana/provisioning/dashboards/openwrt-detailed.json && docker compose -f /etc/phase3c/compose.yml up -d --no-deps --force-recreate grafana"
+exit 0
+output: phase3c-grafana-1 recreated and started
+
+ssh -i .local-ssh/id_ed25519_v2 -o BatchMode=yes root@192.168.1.1 "wget -qO- 'http://127.0.0.1:9090/api/v1/query?query=router_wan_probe_success'"
+exit 0
+output: success; value 1 for job=openwrt, instance=127.0.0.1:9100, target=1.1.1.1
+
+ssh -i .local-ssh/id_ed25519_v2 -o BatchMode=yes root@192.168.1.1 "wget -qO- http://192.168.1.1:3000/api/health"
+first two immediate post-recreation attempts: Failed to send request: Operation not permitted
+retry exit 0
+output: database ok, version 13.2.1
+```
+
+The **OpenWrt Detailed Metrics** dashboard now has the **WAN probe latency**
+and **WAN probe packet loss** time-series panels; its version advanced from 7
+to 8. The installed collector SHA-256 is
+`eee1e6a3ef6f875b9954ec68379b3ce0db3f736f1eae954a27479a6d493f5d45`;
+the installed dashboard SHA-256 is
+`c39aa268be8945ee43c06e2d54d53cb78dd3e19768f87e0a3539b77b3f608c4a`.
+
+For this boot, collector rollback is
+`cp /tmp/router_wan_probe.before-20260928.lua /usr/lib/lua/prometheus-collectors/router_wan_probe.lua && /etc/init.d/prometheus-node-exporter-lua restart`
+when the backup exists; otherwise remove the installed collector and restart
+only that exporter. Dashboard rollback is
+`cp /tmp/openwrt-detailed.before-wan-probe.json /etc/phase3c/grafana/provisioning/dashboards/openwrt-detailed.json && docker compose -f /etc/phase3c/compose.yml up -d --no-deps --force-recreate grafana`.
+
+### 2026-09-28 JST - Per-LAN-device top traffic and connection monitoring (executed)
+
+At the user's explicit request, the dashboard now retains a LAN IPv4 address as
+the `device` Prometheus label. It does not collect hostnames, MAC addresses,
+payloads, DNS queries, remote destinations, ports, or application labels.
+
+`router_device_usage` derives the current IPv4 prefix from `br-lan`, reads the
+existing conntrack table with accounting enabled, and attributes a flow to its
+original LAN IPv4 source. It emits:
+
+- `router_lan_device_active_connections{device="..."}`: current tracked-flow count.
+- `router_lan_device_traffic_bytes_total{device="..."}`: a counter accumulated
+  from bidirectional conntrack-byte deltas for flows visible at each scrape.
+
+The detailed dashboard version advanced from 8 to 9 and adds **Top 10 LAN IPv4
+devices by sampled traffic (5 minutes)** using
+`topk(10, sum by (device) (rate(router_lan_device_traffic_bytes_total[5m])))`,
+and **Top 10 LAN IPv4 devices by active connections** using
+`topk(10, router_lan_device_active_connections)`. Traffic is intentionally
+described as sampled: a flow that begins and ends entirely between 30-second
+scrapes cannot be represented. A connection remains a network flow, not an
+application session.
+
+The exact command sequence and observed results were:
+
+```text
+ssh -i .local-ssh/id_ed25519_v2 -o BatchMode=yes root@192.168.1.1 "printf 'ACCT='; sysctl -n net.netfilter.nf_conntrack_acct 2>/dev/null; printf 'CONNTRACK='; conntrack -L -o extended 2>/dev/null | head -8; printf 'NFT_VERSION='; nft --version; printf 'NFT_RULESET_MATCHES='; nft list ruleset | grep -E 'counter|meter|quota' | head -30; printf 'DHCP='; head -10 /tmp/dhcp.leases"
+exit 0
+output excerpt: ACCT=1; conntrack records include both directions' packets and bytes; nftables v1.1.6; DHCP lease has 192.168.1.157 (hostname deliberately not exported)
+
+scp -O -i .local-ssh/id_ed25519_v2 -o BatchMode=yes phase3c/device-usage/router-device-usage.lua root@192.168.1.1:/tmp/router_device_usage.lua
+exit 0
+
+ssh -i .local-ssh/id_ed25519_v2 -o BatchMode=yes root@192.168.1.1 'lua -e "metric=function(name, kind) return function(labels, value) print(name .. \"{device=\" .. labels.device .. \"} \" .. value) end end; local collector=dofile(\"/tmp/router_device_usage.lua\"); collector.scrape()"'
+failed before collector execution: ash: syntax error: unexpected "("
+correction: validate with `lua /tmp/router_device_usage.lua`, then use the normal exporter collector API.
+
+ssh -i .local-ssh/id_ed25519_v2 -o BatchMode=yes root@192.168.1.1 "lua /tmp/router_device_usage.lua; cp /usr/lib/lua/prometheus-collectors/router_device_usage.lua /tmp/router_device_usage.before-20260928.lua 2>/dev/null || true; cp /tmp/router_device_usage.lua /usr/lib/lua/prometheus-collectors/router_device_usage.lua; /etc/init.d/prometheus-node-exporter-lua restart"
+exit 0
+
+ssh -i .local-ssh/id_ed25519_v2 -o BatchMode=yes root@192.168.1.1 "wget -qO /tmp/router-device-usage-metrics http://127.0.0.1:9100/metrics && grep -E 'router_lan_device_(traffic_bytes_total|active_connections)|node_scrape_collector_(success|duration_seconds).*router_device_usage' /tmp/router-device-usage-metrics"
+exit 0
+output: device=192.168.1.157; traffic_bytes_total=0; active_connections=7; collector success=1; duration=0.019003868103027 seconds
+
+scp -O -i .local-ssh/id_ed25519_v2 -o BatchMode=yes phase3c/grafana/provisioning/dashboards/openwrt-detailed.json root@192.168.1.1:/tmp/openwrt-detailed.device-usage.json
+ssh -i .local-ssh/id_ed25519_v2 -o BatchMode=yes root@192.168.1.1 "cp /etc/phase3c/grafana/provisioning/dashboards/openwrt-detailed.json /tmp/openwrt-detailed.before-device-usage.json && cp /tmp/openwrt-detailed.device-usage.json /etc/phase3c/grafana/provisioning/dashboards/openwrt-detailed.json && docker compose -f /etc/phase3c/compose.yml up -d --no-deps --force-recreate grafana"
+both exit 0
+output: phase3c-grafana-1 recreated and started
+
+ssh -i .local-ssh/id_ed25519_v2 -o BatchMode=yes root@192.168.1.1 "wget -qO /tmp/router-device-usage-metrics-second http://127.0.0.1:9100/metrics; grep -E 'router_lan_device_(traffic_bytes_total|active_connections)|node_scrape_collector_success.*router_device_usage' /tmp/router-device-usage-metrics-second; wget -qO- 'http://127.0.0.1:9090/api/v1/query?query=router_lan_device_active_connections'; wget -qO- http://192.168.1.1:3000/api/health"
+exit 0
+output: traffic_bytes_total=788; exporter active_connections=37; collector success=1; Prometheus active_connections=35; Grafana database ok (13.2.1)
+```
+
+The installed collector SHA-256 is
+`8b65b7ad99404b05ad03f88c268ff5faadae8e91fec49300a3c83e4c3eb39b64`;
+the installed dashboard SHA-256 is
+`f0f6e50a774091f1cc26a32d35ce909f2a6b227a6d75ea347a5f0f2c7b68102b`.
+The counter snapshot is `/tmp/router_device_usage.state` and is intentionally
+lost on reboot; Prometheus recognizes the resulting counter reset. For this
+boot, restore `/tmp/router_device_usage.before-20260928.lua` when it exists,
+otherwise remove the collector; then restart only
+`prometheus-node-exporter-lua`. Restore
+`/tmp/openwrt-detailed.before-device-usage.json` and recreate only Grafana to
+roll back the dashboard panels.

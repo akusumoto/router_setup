@@ -27,6 +27,8 @@ available only at `192.168.1.1:3000` on the LAN.
 | Interface quality | `node_network_receive_errs_total`, `node_network_transmit_errs_total`, `node_network_receive_drop_total`, `node_network_transmit_drop_total` | Five-minute error and drop rates |
 | Monitoring health | `node_scrape_collector_success`, Prometheus `up{job="openwrt"}` | Minimum collector-success value and Prometheus scrape health (1 = healthy) |
 | Hourly Internet performance | Aggregate and fastest-single `router_performance_*_mbps`, per-direction valid-sample counts, validity, and last-run gauges | Three concurrent 25 MB downloads, then three concurrent 25 MB uploads each hour; aggregate rate is total valid bytes divided by the longest flow time, and a direction requires three curl-success/HTTP-200/exact-byte transfers |
+| WAN latency and loss | `router_wan_probe_success`, `router_wan_probe_packet_loss_ratio`, `router_wan_probe_rtt_seconds` | Three ICMP packets from the router to fixed target `1.1.1.1` at every 30-second exporter scrape; average RTT and loss are plotted. It is a reachability/path indicator, not an application or line-rate test. |
+| Per-device usage | `router_lan_device_traffic_bytes_total`, `router_lan_device_active_connections` | Top ten LAN IPv4 addresses by sampled five-minute traffic rate and by current conntrack-flow count. IPv4 address labels are collected at the user's request; no names, MAC addresses, payloads, DNS queries, or application classifications are collected. |
 | Router identity and clock | `node_openwrt_info`, `node_os_info`, `node_uname_info`, `node_time_seconds` | Retained for query/debugging; static identity values do not have a primary panel |
 
 The monitored interfaces are WAN `eth0`, LAN port `eth1`, and LAN bridge
@@ -36,11 +38,22 @@ must not be added together as a total.
 ## Deliberately not collected
 
 The installed exporter does not emit filesystem capacity, thermal/fan values,
-DHCP leases, firewall-rule counters, routing/MAP-E state, Wi-Fi state, or active
-latency/loss/throughput probes. The DS57U has thermal zones, but their values
-are not yet exported. These categories require a separately reviewed collector
-or probe design that defines labels/privacy, probe targets and rate, resource
+DHCP leases, firewall-rule counters, routing/MAP-E state, or Wi-Fi state. The
+DS57U thermal-zone directories contained no readable temperature files during
+the 2026-09-28 compatibility check, so no temperature metric is claimed. The
+WAN ICMP probe is deliberately narrow: it has one fixed target, sends no
+payload beyond ICMP echo, stores no client identity, uses three packets per
+30-second scrape, and reports a failed/all-loss sample rather than fabricating
+a latency value. Other probe targets, active throughput testing, and Wi-Fi
+telemetry require separately reviewed designs covering labels/privacy, resource
 impact, failure semantics, retention, and rollback.
 
+The explicitly authorized per-device metrics retain LAN IPv4-address labels in
+Prometheus for its normal 15-day-or-2-GiB retention period; they do not retain
+names, MAC addresses, packet payloads, DNS queries, remote destinations, ports,
+or application labels.
+
 No Phase 3C dashboard or metric collection includes packet payloads, DNS
-queries, client identities, or per-flow logs.
+queries, MAC addresses, DHCP hostnames, remote destinations, ports, app labels,
+or per-flow logs. The two per-device metrics explicitly include the LAN IPv4
+address as a device identifier at the user's request.
