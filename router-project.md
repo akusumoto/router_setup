@@ -76,7 +76,7 @@ Confirmed specs:
 
 Since both wired LAN ports are Intel NICs, they are expected to be suitable for OpenWrt/Linux.
 
-The wireless LAN (Realtek RTL8188EE) is an older 2.4GHz Wi-Fi adapter and will not be used in this project. The plan is to use the existing BUFFALO router in AP mode for Wi-Fi.
+The wireless LAN (Realtek RTL8188EE) is an older 2.4GHz Wi-Fi adapter and will not be used in this project. The current requested deployment keeps the existing BUFFALO router in router mode for Wi-Fi and its existing `192.168.11.0/24` LAN; see `phase2-router-mode-replacement.md`.
 
 Expected final topology:
 
@@ -89,12 +89,11 @@ Shuttle DS57U / OpenWrt
   |
 Intel NIC 2 (LAN)
   |
-Switch
+BUFFALO WAN (DHCP client on DS57U LAN)
   |
+BUFFALO router mode, LAN 192.168.11.1/24
   +-- Wired Devices
-  +-- BUFFALO (AP mode)
-          |
-        Wi-Fi
+  `-- Wi-Fi
 ```
 
 ## 4. Reasons for choosing OpenWrt
