@@ -1484,3 +1484,167 @@ No failed deployment or rollback occurred. Browser rendering was not checked.
 Rollback, if needed: restore both JSON files from
 `/tmp/monitoring-wan-label-before-20261004/` (or the matching local `backups/`
 directory after reboot) and recreate only Grafana using the same command.
+
+### 2026-10-04 JST - CPU/memory line graphs and traffic Mb/s (executed)
+
+Topology remains ONU -> DS57U `eth0`, LAN `eth1` / `br-lan`, BUFFALO WAN
+`192.168.1.2`. Only the Detailed Metrics dashboard and its inventory documents
+changed. Baseline local `rtk git status --short` was clean.
+
+Configuration diff: panel 1 title `CPU busy (5 minutes)` -> `CPU used`;
+panels 1 and 3 changed from `stat` to `timeseries`, with `drawStyle=line`,
+linear interpolation, line width 1, no fill, no points, no stacking, and
+percentage scale 0–100. CPU retains its five-minute rate expression;
+memory retains `100 * (1 - available / total)`. Interface traffic (panel 8)
+and top-ten sampled traffic (panel 21) now use Grafana `unit=Mbps` and multiply
+the byte-per-second expressions by `8 / 1000000`. Panel 21 retains its bar
+style. Dashboard version increased from `11` to `12`.
+
+Commands in execution order:
+
+```text
+rtk git status --short
+rtk proxy cmd.exe /c "ssh -tt -i .local-ssh/id_ed25519_v2 -o BatchMode=yes -o ConnectTimeout=10 root@192.168.1.1"
+rtk proxy node backups/update-graph-style-20261004.mjs
+```
+
+The ignored local helper updates only the four panels and version, parses
+the resulting JSON, and generates the five exact Prometheus query checks.
+Exit `0`: valid JSON, version `12`, local SHA-256
+`6166f3c0355712f1c06d1ee9fec94d093fca580465e935a37318866f0458bc81`.
+In the persistent router session:
+
+```sh
+cp /etc/phase3c/grafana/provisioning/dashboards/openwrt-detailed.json /tmp/openwrt-detailed.before-graph-style-20261004.json
+sha256sum /tmp/openwrt-detailed.before-graph-style-20261004.json
+```
+
+Backup exit `0`, SHA-256
+`032caa3fda301e0f447919e7bd00aa6661346eaea5d49d63bf4b73e09c5e0f68`.
+Local staging, exit `0`:
+
+```text
+rtk proxy cmd.exe /c "scp -O -i .local-ssh/id_ed25519_v2 -o BatchMode=yes phase3c/grafana/provisioning/dashboards/openwrt-detailed.json backups/graph-style-query-20261004.sh root@192.168.1.1:/tmp/"
+```
+
+Persistent-session deployment and query checks:
+
+```sh
+cp /tmp/openwrt-detailed.json /etc/phase3c/grafana/provisioning/dashboards/openwrt-detailed.json
+docker compose -f /etc/phase3c/compose.yml up -d --no-deps --force-recreate grafana
+sh /tmp/graph-style-query-20261004.sh
+sha256sum /etc/phase3c/grafana/provisioning/dashboards/openwrt-detailed.json
+```
+
+Copy and recreate each exited `0`, output `phase3c-grafana-1 Started`.
+Installed SHA-256 matches the local hash above. The query script runs
+`curl -fsSG --data-urlencode 'query=<exact panel expression>'
+http://127.0.0.1:9090/api/v1/query -o
+/tmp/graph-style-results-20261004/<panel>-<refId>.json`, then `jsonfilter`
+for status, device labels, and values. Exact commands are retained in
+ignored `backups/graph-style-query-20261004.sh`, SHA-256
+`097cce473d0b989c5326c9c2b51375f976d67220388d8ed4fe417fcf405a3a1f`.
+All five curl exits were `0`, all responses `success` and nonempty:
+
+```text
+1-A: CPU used = 2.785185185181305 percent
+3-A: Memory used = 5.312115188950772 percent
+8-A: RX Mb/s
+  br-lan=0.14342394074074075
+  eth0=8.938867585185186
+  eth1=0.17302325925925927
+  map-mape_auto=8.433317777777779
+8-B: TX Mb/s
+  br-lan=8.664169422222223
+  eth0=0.2281302222222222
+  eth1=8.691879644444445
+  map-mape_auto=0.14299997037037038
+21-A: sampled traffic Mb/s
+  192.168.1.2=4.692720888888889
+  192.168.1.157=0.047071822222222226
+  192.168.1.1=0
+```
+
+Backup retrieval and PC-side health:
+
+```text
+rtk proxy cmd.exe /c "scp -O -i .local-ssh/id_ed25519_v2 -o BatchMode=yes root@192.168.1.1:/tmp/openwrt-detailed.before-graph-style-20261004.json backups/"
+rtk proxy cmd.exe /c "curl.exe -fsS --max-time 10 http://192.168.1.1:3000/api/health"
+```
+
+Both exited `0`; health returned `database=ok`, `version=13.2.1`.
+In the same router session,
+`docker logs --since 3m phase3c-grafana-1 2>&1 | grep 'provisioning.dashboard'`
+returned `starting to provision dashboards` followed by `finished to
+provision dashboards`, filter exit `0`. SSH was then closed normally.
+Local `rtk git diff --check` exited `0` (only LF-to-CRLF warnings).
+
+Verdict: PASS for source JSON, deployment hash, five query responses,
+dashboard provisioning, and Grafana health. Browser rendering was not checked.
+No failed attempt or rollback occurred. Rollback, if needed: copy
+`/tmp/openwrt-detailed.before-graph-style-20261004.json` over the installed
+Detailed dashboard and recreate only Grafana with the same command. The
+matching backup is also retained locally under ignored `backups/`.
+
+### 2026-10-04 JST - Dedicated CPU and memory row (executed)
+
+Topology remains direct ONU -> DS57U `eth0`, LAN `eth1` / `br-lan`.
+User requested that only CPU used and Memory used share a row. Detailed
+dashboard version `13` puts CPU at `{h:7,w:12,x:0,y:0}` and Memory at
+`{h:7,w:12,x:12,y:0}`. Load and Available memory each occupy half the next
+row (`y:7`); remaining panels moved down seven grid units. Panel queries,
+styles, and units are preserved.
+
+Commands in execution order:
+
+```text
+rtk git status --short
+rtk proxy node backups/update-cpu-memory-row-20261004.mjs
+rtk proxy cmd.exe /c "ssh -tt -i .local-ssh/id_ed25519_v2 -o BatchMode=yes -o ConnectTimeout=10 root@192.168.1.1"
+```
+
+Existing modifications from the previous graph-style update were preserved.
+Ignored helper exit `0`: valid JSON, no panel overlap, only layout/version
+changed. Router commands ran through one persistent session:
+
+```sh
+cp /etc/phase3c/grafana/provisioning/dashboards/openwrt-detailed.json /tmp/openwrt-detailed.before-cpu-memory-row-20261004.json
+sha256sum /tmp/openwrt-detailed.before-cpu-memory-row-20261004.json
+```
+
+Backup exit `0`, SHA-256
+`6166f3c0355712f1c06d1ee9fec94d093fca580465e935a37318866f0458bc81`.
+Upload exit `0`:
+
+```text
+rtk proxy cmd.exe /c "scp -O -i .local-ssh/id_ed25519_v2 -o BatchMode=yes phase3c/grafana/provisioning/dashboards/openwrt-detailed.json root@192.168.1.1:/tmp/"
+```
+
+Persistent-session deployment:
+
+```sh
+cp /tmp/openwrt-detailed.json /etc/phase3c/grafana/provisioning/dashboards/openwrt-detailed.json
+docker compose -f /etc/phase3c/compose.yml up -d --no-deps --force-recreate grafana
+sha256sum /etc/phase3c/grafana/provisioning/dashboards/openwrt-detailed.json
+```
+
+Install and recreate exits `0`; `phase3c-grafana-1 Started`.
+Installed/local SHA-256 match:
+`ac8f2404c5f0c39efc066ec8426d31e797192b7c7ebd35c21e126d95e8aa51f6`.
+
+```text
+rtk proxy cmd.exe /c "curl.exe -fsS --max-time 10 http://192.168.1.1:3000/api/health"
+rtk proxy cmd.exe /c "scp -O -i .local-ssh/id_ed25519_v2 -o BatchMode=yes root@192.168.1.1:/tmp/openwrt-detailed.before-cpu-memory-row-20261004.json backups/"
+```
+
+Both exit `0`; Grafana health `database=ok`, `version=13.2.1`.
+`docker logs --since 2m phase3c-grafana-1 2>&1 | grep 'provisioning.dashboard'`
+returned `starting to provision dashboards` and `finished to provision
+dashboards`, filter exit `0`; SSH closed normally. Local
+`rtk git diff --check` exited `0`. Inventory describes the dedicated row.
+
+Verdict: PASS for layout validation, deployed hash, provisioning, and health.
+Browser rendering was not checked; unchanged PromQL was not rerun.
+No failures or rollback. Rollback if needed: restore the saved JSON from
+`/tmp/openwrt-detailed.before-cpu-memory-row-20261004.json` (also copied to
+local ignored `backups/`) and recreate only Grafana with the same command.

@@ -1,19 +1,25 @@
 # Detailed Prometheus and Grafana Metrics
 
 The `OpenWrt Detailed Metrics` dashboard displays every operational metric
-family emitted by the currently installed OpenWrt Lua exporter: CPU busy and
-load, memory usage/availability, conntrack utilization, process state, uptime,
-RX/TX bytes and packet rates, interface errors/drops, carrier, link speed in
+family emitted by the currently installed OpenWrt Lua exporter: CPU used and
+memory used as percentage line graphs, load, memory availability, conntrack
+utilization, process state, uptime, RX/TX traffic in Mb/s and packet rates,
+interface errors/drops, carrier, link speed in
 Mb/s,
 carrier-down events, file-descriptor utilization, entropy, exporter collector
 success, Prometheus scrape health, the count of active IPv4 LAN devices, and
 the current number of active conntrack entries (tracked network flows through
 the router, not distinct devices or application sessions). It also displays the
-top ten LAN IPv4 addresses by sampled traffic rate and active conntrack-flow
+top ten LAN IPv4 addresses by sampled traffic rate in Mb/s and active conntrack-flow
 count. Per-application connection counts are not emitted: conntrack has
 network-flow metadata rather than reliable application identities, and encrypted
 traffic prevents safe, accurate application classification without a separately
 reviewed DPI design.
+CPU used and Memory used share a dedicated first row, each occupying half
+the dashboard width. Load averages and Available memory occupy the next row.
+Traffic panels convert byte-per-second rates using `* 8 / 1000000` and the
+Grafana `Mbps` unit. CPU used retains its five-minute average; memory used
+is the used percentage calculated from total and available memory.
 The active-device collector sends one bounded ARP probe to each DHCP lease and
 current or remembered IPv4 neighbor address, then counts unique MAC addresses
 that reply. It measures direct, responsive IPv4 LAN presence; it intentionally
