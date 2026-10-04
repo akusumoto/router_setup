@@ -18,9 +18,12 @@ The active-device collector sends one bounded ARP probe to each DHCP lease and
 current or remembered IPv4 neighbor address, then counts unique MAC addresses
 that reply. It measures direct, responsive IPv4 LAN presence; it intentionally
 excludes IPv6-only devices and clients with neither a DHCP lease nor a
-remembered IPv4 neighbor address. The monitored interfaces are `eth0`,
-`eth1`, and `br-lan`; bridge and member traffic may overlap and must not be
-added together.
+remembered IPv4 neighbor address. The monitored interfaces are ONU uplink
+`eth0`, IPv4 WAN tunnel `map-mape_auto`, LAN port `eth1`, and LAN bridge
+`br-lan`, with role labels in the legends. Link speed and carrier-down events
+select only physical NICs `eth0`/`eth1`. Tunnel/outer-interface and bridge/member
+traffic overlap and must not be added together. The logical DHCP interface
+`wan` can be pending while `wan6` and `mape_auto` provide the working WAN.
 
 The separate `OpenWrt Performance` dashboard displays hourly three-parallel-flow
 aggregate and fastest-single download/upload results (`router_performance_*`)

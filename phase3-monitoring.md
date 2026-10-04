@@ -160,6 +160,23 @@ health does not establish authenticated browser or smartphone use.
 
 ### 4.4 Custom collectors and hourly performance
 
+After a topology change, confirm Linux device names with `ls /sys/class/net`
+and obtain each logical interface's `up`, `device`, and `l3_device` from
+`ubus call network.interface.<name> status` using `jsonfilter`. For direct ONU,
+the dashboards include `eth0` (ONU/native IPv6), `map-mape_auto` (IPv4 MAP-E),
+`eth1` (LAN port), and `br-lan` (LAN bridge), with explicit role labels.
+The logical DHCP `wan` can remain pending while `wan6` and `mape_auto` are up.
+Physical link-speed and carrier-down panels select `eth0`/`eth1` only;
+overlapping tunnel/outer and bridge/member traffic must not be summed.
+
+For dashboard-only changes, back up the installed JSON outside the provisioning
+directory, copy the updated JSON into
+`/etc/phase3c/grafana/provisioning/dashboards/`, then run
+`docker compose -f /etc/phase3c/compose.yml up -d --no-deps --force-recreate grafana`.
+Verify deployed hashes, `/api/health`, provisioning logs, and every changed
+PromQL query, including nonempty MAP-E RX/TX rates. Restore the backed-up JSON
+and recreate Grafana with the same command to roll back.
+
 ```sh
 cp /etc/phase3c/connected-devices/router-connected-devices.lua /usr/lib/lua/prometheus-collectors/router_connected_devices.lua
 cp /etc/phase3c/device-usage/router-device-usage.lua /usr/lib/lua/prometheus-collectors/router_device_usage.lua

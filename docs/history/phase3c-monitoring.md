@@ -1234,3 +1234,253 @@ otherwise remove the collector; then restart only
 `prometheus-node-exporter-lua`. Restore
 `/tmp/openwrt-detailed.before-device-usage.json` and recreate only Grafana to
 roll back the dashboard panels.
+
+### 2026-10-04 JST - Direct-ONU WAN interface monitoring (executed)
+
+Topology: ONU -> DS57U `eth0`; LAN remains `eth1` / `br-lan` at
+`192.168.1.1`. No cable move or network/firewall setting change was made.
+The initial claim that NIC names might have changed was corrected by live
+evidence: physical devices remain `eth0`/`eth1`; the added IPv4 WAN path is
+`map-mape_auto`, which the dashboard selectors omitted.
+
+Read-only baseline at `2026-10-04T17:08:03+09:00`, in one persistent SSH
+session opened with:
+
+```text
+rtk proxy cmd.exe /c "ssh -tt -i .local-ssh/id_ed25519_v2 -o BatchMode=yes -o ConnectTimeout=10 root@192.168.1.1"
+for n in wan wan6 lan mape_auto; do printf '%s ' "$n"; ubus call network.interface.$n status | jsonfilter -e '@.up' -e '@.device' -e '@.l3_device'; done
+ls /sys/class/net
+uci show vnstat
+docker compose -f /etc/phase3c/compose.yml ps
+wget -qO /tmp/monitoring-nic-baseline.metrics http://127.0.0.1:9100/metrics
+grep -E '^node_network_(receive_bytes_total|speed_bytes|carrier)\{' /tmp/monitoring-nic-baseline.metrics
+ip route show default
+wget -qO- 'http://127.0.0.1:9090/api/v1/query?query=node_network_receive_bytes_total' | jsonfilter -e '@.status' -e '@.data.result[*].metric.device'
+```
+
+Observed: `wan up=false, device=eth0`; `wan6 up=true, device/l3_device=eth0`;
+`lan up=true, device/l3_device=br-lan`; `mape_auto up=true,
+l3_device=map-mape_auto`. Default IPv4 route: `default dev map-mape_auto scope
+link`. Both containers were Up for five days. vnStat monitors `br-lan` and
+`eth0`, so its existing physical-uplink accounting needs no change.
+Prometheus query returned `success` (pipeline exit `0`) and devices
+`docker0`, `lo`, `br-lan`, `ip6tnl0`, `eth0`, `eth1`, `map-mape_auto`.
+Exporter evidence:
+
+```text
+node_network_receive_bytes_total{device="map-mape_auto"} 8554503130
+node_network_receive_bytes_total{device="eth0"} 21072980552
+node_network_speed_bytes{device="eth0"} 125000000
+node_network_speed_bytes{device="eth1"} 125000000
+node_network_carrier{device="map-mape_auto"} 1
+router_wan_probe_success{target="1.1.1.1"} 1
+```
+
+All 16 exporter collector-success values were `1` (grep exit `0`). No
+collector restart was needed. The DHCP `wan` being pending is distinct from
+the working native IPv6 and MAP-E logical interfaces.
+
+Failures and corrections: PowerShell/rtk parsing rejected initial regex
+alternation and ambiguous `-e` / `-i` arguments; `rtk --%` worked for rg,
+and `rtk proxy cmd.exe /c "ssh ..."` worked for SSH. The sandbox initially
+denied SSH network access; authorized escalated execution connected.
+Router `stty` was unavailable, BusyBox `ip -br` was unsupported, and ash did
+not expand `{overview,detailed}`; corrected checks used focused jsonfilter,
+`ls /sys/class/net`, and explicit paths. An overlong interactive command was
+truncated, leaving a grep filename ending in `.metr`; the focused retry
+read the actual `.metrics` file successfully. Local `python.exe` was
+inaccessible; temporary Node helpers generated and validated the JSON.
+These helpers are removed after verification.
+
+Backup and deployment, commands in execution order:
+
+```sh
+mkdir -p /tmp/monitoring-nic-before-20261004
+cp /etc/phase3c/grafana/provisioning/dashboards/openwrt-overview.json /tmp/monitoring-nic-before-20261004/
+cp /etc/phase3c/grafana/provisioning/dashboards/openwrt-detailed.json /tmp/monitoring-nic-before-20261004/
+sha256sum /tmp/monitoring-nic-before-20261004/*.json
+```
+
+Both copies exited `0`. Backup hashes: Overview
+`eb482dca7b812fd668bc7a20ebc200bd74846d28004d64e7fb2bbc1c1f57e484`,
+Detailed `f0f6e50a774091f1cc26a32d35ce909f2a6b227a6d75ea347a5f0f2c7b68102b`.
+The directory was copied to ignored `backups/monitoring-nic-before-20261004/`
+using `rtk proxy cmd.exe /c "scp -O -r -i .local-ssh/id_ed25519_v2 -o BatchMode=yes root@192.168.1.1:/tmp/monitoring-nic-before-20261004 backups/"`, exit `0`.
+
+Local JSON validation passed: Overview version `2`, Detailed version `10`.
+The configuration diff adds `map-mape_auto` to Overview traffic and Detailed
+traffic/packets/errors/drops/carrier. Physical speed and carrier-down events
+select `eth0|eth1`. Exact-name display overrides label WAN / ONU, WAN IPv4 /
+MAP-E, LAN port, and LAN bridge; descriptions warn against adding overlapping
+paths. Metric names, collector scope, and performance calculation are unchanged.
+
+```text
+rtk proxy cmd.exe /c "scp -O -i .local-ssh/id_ed25519_v2 -o BatchMode=yes phase3c/grafana/provisioning/dashboards/openwrt-overview.json phase3c/grafana/provisioning/dashboards/openwrt-detailed.json root@192.168.1.1:/tmp/"
+```
+
+Upload exited `0`; persistent-session install and reload:
+
+```sh
+cp /tmp/openwrt-overview.json /etc/phase3c/grafana/provisioning/dashboards/openwrt-overview.json && cp /tmp/openwrt-detailed.json /etc/phase3c/grafana/provisioning/dashboards/openwrt-detailed.json
+docker compose -f /etc/phase3c/compose.yml config --quiet
+docker compose -f /etc/phase3c/compose.yml up -d --no-deps --force-recreate grafana
+```
+
+Install, Compose validation, and Grafana recreate each exited `0`; output
+confirmed `phase3c-grafana-1 Started`. Prometheus/exporter were not restarted.
+Post-install verification results follow below.
+
+Verification commands, in execution order:
+
+```text
+rtk proxy node tools/verify-monitoring-nics.mjs
+rtk proxy cmd.exe /c "scp -O -i .local-ssh/id_ed25519_v2 -o BatchMode=yes backups/monitoring-nic-20261004/query.sh root@192.168.1.1:/tmp/monitoring-nic-query.sh"
+```
+
+Both exited `0`. The temporary Node helper generated all 13 exact interface
+expressions from the two dashboards. Persistent-session checks:
+
+```sh
+sh /tmp/monitoring-nic-query.sh
+sha256sum /etc/phase3c/grafana/provisioning/dashboards/openwrt-overview.json /etc/phase3c/grafana/provisioning/dashboards/openwrt-detailed.json
+curl -fsS http://192.168.1.1:3000/api/health
+docker logs --since 5m phase3c-grafana-1 2>&1 | grep -E 'provisioning.dashboard|level=error'
+netstat -lnt | grep -E ':3000|:9090|:9100'
+```
+
+The query script executes `curl -fsSG --data-urlencode 'query=<exact dashboard
+expression>' http://127.0.0.1:9090/api/v1/query -o
+/tmp/monitoring-nic-results-20261004/<dashboard>-<panel>-<refId>.json` for each
+expression and prints each curl exit status; all 13 were `0`. Exact commands
+are retained in ignored `backups/monitoring-nic-20261004/query.sh` (SHA-256
+`1df640d1d5be4fbe1c45216c221e3496b4dbe24dc7e0b9ead77ea91b5f151ccf`),
+with expressions in `queries.json` (SHA-256
+`4de9e1c7d0e435be958e0804b046dc1606d25f4139db7a9f507efe3b798b4b15`).
+
+Installed SHA-256 values match local files:
+
+```text
+Overview d2e0379f6e7965b045441cf9feb974e7089688c6feb3aaba8e8c9a35cff7826c
+Detailed 90e7efc9f48ae31167a93c97d66e2d1ce7777a731bd602aa40fff9f1f6e3b599
+```
+
+Grafana health curl exit `0`, response `database=ok`, `version=13.2.1`.
+Dashboard logs: `starting to provision dashboards`, then `finished to
+provision dashboards`; log filter exit `0`. Logs also report absent optional
+`/etc/grafana/provisioning/plugins` and `alerting` directories, separate from
+successful dashboard provisioning; those unrelated categories were not changed.
+Listener filter exit `0`:
+
+```text
+127.0.0.1:9090 LISTEN
+127.0.0.1:9100 LISTEN
+192.168.1.1:3000 LISTEN
+```
+
+Local retrieval and validation:
+
+```text
+rtk proxy cmd.exe /c "scp -O -r -i .local-ssh/id_ed25519_v2 -o BatchMode=yes root@192.168.1.1:/tmp/monitoring-nic-results-20261004 backups/monitoring-nic-20261004/results"
+rtk proxy node tools/verify-monitoring-nics.mjs --check
+rtk proxy cmd.exe /c "curl.exe -fsS --max-time 10 http://192.168.1.1:3000/api/health"
+```
+
+All exited `0`. Verification checks each response's success, exact expected
+device set, and finite sample values. Relevant verbatim output:
+
+```text
+overview-3-A: PASS br-lan=33425.27407407408, eth0=1946508.5185185187, map-mape_auto=1427146.0555555555
+overview-3-B: PASS br-lan=1466433.6074074074, eth0=51349.57037037037, map-mape_auto=33370.65185185185
+detailed-11-A: PASS eth1=1000, eth0=1000
+detailed-12-A: PASS eth1=1, eth0=1, br-lan=1, map-mape_auto=1
+detailed-13-A: PASS eth0=1.0003473428273706, eth1=0
+PASS: all 13 changed interface queries return expected devices and finite values
+```
+
+Detailed byte/packet rates returned all four selected devices; every selected
+RX/TX error/drop rate was `0`. The carrier-down count is a rolling 24-hour
+`increase`, not evidence of a new event during this dashboard change.
+Complete validation output is ignored
+`backups/monitoring-nic-20261004/validation.log`, SHA-256
+`36ed25b8dfe76d30aa51def27916ff9bcde3105489a2b91f3a45c646d5f80f91`.
+The temporary Node helpers are retained in the same ignored directory for
+reproducibility. PC-side Grafana health also returned `database=ok`.
+
+Verdict: PASS for deployed JSON, successful provisioning, all changed query
+results, physical NIC speeds, LAN health access, and loopback monitoring
+listeners. Browser rendering and behavior across a future reconnect/reboot
+were not checked. Manuals/inventories now describe the observed direct-ONU
+device mapping. Final local `rtk git diff --check` exited `0` (only Git
+LF-to-CRLF warnings).
+
+Rollback was not run. Restore the two saved JSON files from
+`/tmp/monitoring-nic-before-20261004/` into
+`/etc/phase3c/grafana/provisioning/dashboards/` and run
+`docker compose -f /etc/phase3c/compose.yml up -d --no-deps --force-recreate grafana`.
+After reboot, recover the backups from local
+`backups/monitoring-nic-before-20261004/` with `scp -O`. No router network,
+firewall, exporter, Prometheus, or vnStat rollback is needed for this change.
+
+### 2026-10-04 JST - Rename WAN / ONU legend to WAN (executed)
+
+Topology remains direct ONU -> DS57U `eth0`, LAN `eth1` / `br-lan`.
+User requested the display-label substitution `WAN / ONU` -> `WAN`.
+Both dashboard JSON files now show `WAN (eth0)` with the existing RX/TX,
+error/drop suffixes. Versions increased to Overview `3`, Detailed `11`.
+JSON parsing and comparison confirmed all query targets were preserved.
+
+Commands in execution order (local commands use RTK; router commands were
+run through one persistent SSH session):
+
+```text
+rtk git status --short
+rtk proxy cmd.exe /c "ssh -tt -i .local-ssh/id_ed25519_v2 -o BatchMode=yes -o ConnectTimeout=10 root@192.168.1.1"
+rtk proxy node backups/rename-wan-label-20261004.mjs
+```
+
+The ignored Node helper replaces the exact label, increments each version,
+parses JSON, and compares old/new panel query targets. It exited `0`.
+
+```sh
+mkdir -p /tmp/monitoring-wan-label-before-20261004
+cp /etc/phase3c/grafana/provisioning/dashboards/openwrt-overview.json /tmp/monitoring-wan-label-before-20261004/ && cp /etc/phase3c/grafana/provisioning/dashboards/openwrt-detailed.json /tmp/monitoring-wan-label-before-20261004/
+sha256sum /tmp/monitoring-wan-label-before-20261004/*.json
+```
+
+Backup copy exit `0`; Overview hash
+`d2e0379f6e7965b045441cf9feb974e7089688c6feb3aaba8e8c9a35cff7826c`, Detailed
+`90e7efc9f48ae31167a93c97d66e2d1ce7777a731bd602aa40fff9f1f6e3b599`.
+
+```text
+rtk proxy cmd.exe /c "scp -O -i .local-ssh/id_ed25519_v2 -o BatchMode=yes phase3c/grafana/provisioning/dashboards/openwrt-overview.json phase3c/grafana/provisioning/dashboards/openwrt-detailed.json root@192.168.1.1:/tmp/"
+```
+
+Upload exit `0`; persistent-session deployment:
+
+```sh
+cp /tmp/openwrt-overview.json /etc/phase3c/grafana/provisioning/dashboards/openwrt-overview.json && cp /tmp/openwrt-detailed.json /etc/phase3c/grafana/provisioning/dashboards/openwrt-detailed.json
+docker compose -f /etc/phase3c/compose.yml up -d --no-deps --force-recreate grafana
+sha256sum /etc/phase3c/grafana/provisioning/dashboards/openwrt-overview.json /etc/phase3c/grafana/provisioning/dashboards/openwrt-detailed.json
+```
+
+Install and recreate each exited `0`, with `phase3c-grafana-1 Started`.
+Installed hashes match local JSON:
+
+```text
+Overview 9bf4c8c5e865c3af4e7a82fe6f20b676f61b4833da932a3d8cd7a8e751cbc31b
+Detailed 032caa3fda301e0f447919e7bd00aa6661346eaea5d49d63bf4b73e09c5e0f68
+```
+
+```text
+rtk proxy cmd.exe /c "scp -O -r -i .local-ssh/id_ed25519_v2 -o BatchMode=yes root@192.168.1.1:/tmp/monitoring-wan-label-before-20261004 backups/"
+rtk proxy cmd.exe /c "curl.exe -fsS --max-time 10 http://192.168.1.1:3000/api/health"
+```
+
+Both exited `0`; health response `database=ok`, `version=13.2.1`.
+`docker logs --since 2m phase3c-grafana-1 2>&1 | grep 'provisioning.dashboard'`
+returned `starting to provision dashboards` and `finished to provision
+dashboards`, filter exit `0`. Final `rtk git diff --check` exited `0`.
+No failed deployment or rollback occurred. Browser rendering was not checked.
+Rollback, if needed: restore both JSON files from
+`/tmp/monitoring-wan-label-before-20261004/` (or the matching local `backups/`
+directory after reboot) and recreate only Grafana using the same command.

@@ -31,9 +31,14 @@ available only at `192.168.1.1:3000` on the LAN.
 | Per-device usage | `router_lan_device_traffic_bytes_total`, `router_lan_device_active_connections` | Top ten LAN IPv4 addresses by sampled five-minute traffic rate and by current conntrack-flow count. IPv4 address labels are collected at the user's request; no names, MAC addresses, payloads, DNS queries, or application classifications are collected. |
 | Router identity and clock | `node_openwrt_info`, `node_os_info`, `node_uname_info`, `node_time_seconds` | Retained for query/debugging; static identity values do not have a primary panel |
 
-The monitored interfaces are WAN `eth0`, LAN port `eth1`, and LAN bridge
-`br-lan`. `br-lan` and `eth1` describe overlapping paths, so their traffic
-must not be added together as a total.
+The monitored interfaces are ONU uplink `eth0` (native IPv6 and encapsulated
+MAP-E), IPv4 WAN tunnel `map-mape_auto`, LAN port `eth1`, and LAN bridge
+`br-lan`. Dashboard legends include these roles. The Overview shows the
+uplink, IPv4 tunnel, and LAN bridge; Detailed Metrics also shows the LAN port.
+Link speed and carrier-down events select physical NICs `eth0`/`eth1` only.
+Tunnel/outer-interface traffic and bridge/member traffic overlap and must
+not be added together as a total. The logical DHCP interface `wan` may be
+pending on a direct-ONU MAP-E connection; it is not a Linux device metric.
 
 ## Deliberately not collected
 
