@@ -30,12 +30,13 @@ It adds `router_performance_*` gauges without adding a listener. Prometheus
 scrapes them through the existing `127.0.0.1:9100` target, and the **OpenWrt
 Performance** Grafana dashboard displays throughput and validity.
 
-The bar chart reduces each metric to its last value in a one-hour range and
-uses a one-hour minimum query interval. This emits one bar per hourly bucket,
-rather than repeating retained values at every Prometheus scrape.
+The provisioned dashboard uses a time-series line with points and a latest-value
+gauge. Read the checked-in dashboard JSON for the exact query/reduction and
+display settings; previous bar-chart experiments are retained in the
+[Phase 3C execution history](../../docs/history/phase3c-monitoring.md).
 
-This measures the current OpenWrt-to-Internet path, which presently traverses
-BUFFALO upstream. It is an hourly indicator, not a line-rate certification or
+This measures the actual OpenWrt-to-Internet path at execution time. Record
+whether it traverses BUFFALO or direct ONU. It is an hourly indicator, not a line-rate certification or
 a comparison with the BUFFALO route. Roll back by removing the cron line, the
 script, collector, state directory, and provisioned dashboard, then restarting
 cron, the exporter, and Grafana as applicable.

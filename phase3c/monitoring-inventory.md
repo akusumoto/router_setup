@@ -12,7 +12,7 @@ available only at `192.168.1.1:3000` on the LAN.
 |---|---|
 | **OpenWrt Overview** | Original concise view: one-minute load, available memory, and WAN/LAN bridge receive/transmit traffic rates. |
 | **OpenWrt Detailed Metrics** | Full operational view of every useful metric family currently emitted by the installed Lua exporter. |
-| **OpenWrt Performance** | Hourly OpenWrt-originated aggregate and fastest-single download/upload results; the bar chart shows only measurement-time samples, while the gauge shows the latest values. |
+| **OpenWrt Performance** | Hourly OpenWrt-originated aggregate and fastest-single download/upload results; a time-series line with points and a latest-value gauge. |
 
 ## Retained metrics and detailed visualization
 
@@ -26,7 +26,7 @@ available only at `192.168.1.1:3000` on the LAN.
 | Interface traffic | `node_network_receive_bytes_total`, `node_network_transmit_bytes_total`, `node_network_receive_packets_total`, `node_network_transmit_packets_total` | Five-minute RX/TX byte and packet rates |
 | Interface quality | `node_network_receive_errs_total`, `node_network_transmit_errs_total`, `node_network_receive_drop_total`, `node_network_transmit_drop_total` | Five-minute error and drop rates |
 | Monitoring health | `node_scrape_collector_success`, Prometheus `up{job="openwrt"}` | Minimum collector-success value and Prometheus scrape health (1 = healthy) |
-| Hourly Internet performance | Aggregate and fastest-single `router_performance_*_mbps`, per-direction valid-sample counts, validity, and last-run gauges | Three concurrent 25 MB downloads, then three concurrent 25 MB uploads each hour; aggregate rate is total valid bytes divided by the longest flow time, and a direction requires three curl-success/HTTP-200/exact-byte transfers |
+| Hourly Internet performance | Aggregate and fastest-single `router_performance_*_mbps`, per-direction valid-sample counts, validity, and last-run gauges | Three concurrent 25 MB downloads, then three concurrent 25 MB uploads each hour; aggregate uses bytes sampled at first completion divided by elapsed time, and a direction requires three curl-success/HTTP-200/exact-byte transfers; see the [calculation contract](performance/README.md) |
 | WAN latency and loss | `router_wan_probe_success`, `router_wan_probe_packet_loss_ratio`, `router_wan_probe_rtt_seconds` | Three ICMP packets from the router to fixed target `1.1.1.1` at every 30-second exporter scrape; average RTT and loss are plotted. It is a reachability/path indicator, not an application or line-rate test. |
 | Per-device usage | `router_lan_device_traffic_bytes_total`, `router_lan_device_active_connections` | Top ten LAN IPv4 addresses by sampled five-minute traffic rate and by current conntrack-flow count. IPv4 address labels are collected at the user's request; no names, MAC addresses, payloads, DNS queries, or application classifications are collected. |
 | Router identity and clock | `node_openwrt_info`, `node_os_info`, `node_uname_info`, `node_time_seconds` | Retained for query/debugging; static identity values do not have a primary panel |

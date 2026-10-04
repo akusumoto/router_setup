@@ -25,7 +25,8 @@ added together.
 The separate `OpenWrt Performance` dashboard displays hourly three-parallel-flow
 aggregate and fastest-single download/upload results (`router_performance_*`)
 and their HTTP-200/exact-byte-count validity. Its active measurement consumes
-about 150 MB per hour and is documented in `phase3c/performance/README.md`.
+about 150 MB per hour and is documented in the
+[performance monitor contract](performance/README.md).
 
 The detailed dashboard also plots router-originated ICMP average RTT and packet
 loss to the fixed public target `1.1.1.1`. The Lua collector sends three packets

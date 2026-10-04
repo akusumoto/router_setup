@@ -1,6 +1,6 @@
 # Custom Router Setup Technical Notes
 
-Last updated: 2026-09-13
+Policy document. Rebuild order: [manual index](README.md). Early baseline and checklist snapshots: [project history](docs/history/project-baseline.md).
 
 ## 1. Objective
 
@@ -13,7 +13,7 @@ Turn a small PC with 2 LAN ports into a router, log in directly to the router, a
 
 Currently using **NTT FLET'S + OCN**, with a BUFFALO WSR-6000AX8 acting as the router. The connection method is **OCN Virtual Connect**, utilizing IPv6 IPoE and IPv4 over IPv6.
 
-## 2. Current Network
+## 2. Starting Topology Behind BUFFALO
 
 ```text
 NTT FLET'S / OCN
@@ -25,7 +25,7 @@ BUFFALO WSR-6000AX8
     Home LAN
 ```
 
-Confirmed information:
+Design baseline to verify before a rebuild:
 
 | Item | Details |
 |---|---|
@@ -35,13 +35,11 @@ Confirmed information:
 | IPv4 | IPv4 over IPv6 |
 | LAN | 192.168.11.0/24, Router 192.168.11.1 |
 
-On the BUFFALO status screen, the IPv4 address `153.243.46.0` and multiple usable port ranges such as `1392-1407`, `2416-2431`, `3440-3455` are displayed.
-
-These can be used as expected values for verification when configuring MAP-E on the custom router.
+Capture current BUFFALO status before moving cables. Historical IPv4 addresses and port ranges are retained in the project history; they must not be reused as MAP-E configuration values.
 
 ## 3. Technology Stack
 
-Currently, **OpenWrt x86_64** is the primary candidate.
+Use **OpenWrt x86_64** for the DS57U rebuild.
 
 | Area | Technology | Policy |
 |---|---|---|
@@ -58,7 +56,7 @@ Currently, **OpenWrt x86_64** is the primary candidate.
 | IDS | Suricata | Future candidate |
 
 
-## 3.1 Expected Hardware
+## 3.1 Target Hardware
 
 Use **Shuttle DS57U** as the custom router PC.
 
@@ -71,8 +69,8 @@ Confirmed specs:
 | Wired LAN 1 | Intel i211 Gigabit Ethernet | WAN candidate |
 | Wired LAN 2 | Intel i218LM Gigabit Ethernet | LAN candidate |
 | Wireless LAN | Realtek RTL8188EE | Will not be used this time |
-| RAM | Unconfirmed | To be confirmed |
-| Storage | Unconfirmed | To be confirmed |
+| RAM | Approximately 8 GB on the recorded DS57U | Recheck during Phase 1 |
+| Storage | 128 GB-class SATA SSD on the recorded DS57U | Recheck disk identity and capacity during Phase 1 |
 
 Since both wired LAN ports are Intel NICs, they are expected to be suitable for OpenWrt/Linux.
 
@@ -157,9 +155,9 @@ Packet analysis will start with `tcpdump` / `libpcap`. The following will also b
 
 ### router-agent / MCP Policy
 
-The `router-agent` will not be off-the-shelf software, but a management agent newly implemented for OpenWrt in this project. The implementation language will be **Rust**.
+The canonical [router-agent specification](router-agent/SPEC.md) defines the implemented Rust one-shot read-only CLI. The architecture ideas below describe future work beyond that bounded implementation.
 
-In the initial stage, it will start as read-only, prioritizing safe retrieval of router status by AI. In the future, MCP server functions will be added, allowing AI/Codex to diagnose and operate the router using structured Tools.
+Keep the implemented agent read-only and non-networked. A PC-side allowlisted SSH/MCP wrapper is proposed future work and is not part of this rebuild. Adding an MCP listener or configuration-changing tools requires a separate scope decision.
 
 Examples of expected read-only Tools:
 
@@ -328,18 +326,7 @@ MAP-E parameters
 
 Verify against values confirmed on the BUFFALO router.
 
-Expected examples:
-
-```text
-IPv4 address
-153.243.46.0
-
-Port sets
-1392-1407
-2416-2431
-3440-3455
-...
-```
+Use measured direct-WAN6 state and the verified provider rule as described in [Phase 2](phase2-setup.md). Do not copy the old BUFFALO IPv4 or port ranges from history.
 
 ### Phase 2C - IPv4 over IPv6
 
@@ -421,30 +408,15 @@ conntrack -L
 | Home internet downtime | Med | Short tests with the ability to quickly revert to BUFFALO |
 | Custom monitoring | Low | Isolate from routing base and implement gradually |
 
-## 11. TODO
+## 11. Rebuild and Future Work
 
-- [x] Check mini PC model/CPU (Shuttle DS57U / Intel Celeron 3205U)
-- [ ] Check mini PC RAM capacity
-- [x] Check manufacturer/chip model of the 2 LAN NICs (Intel i211 / Intel i218LM)
-- [ ] Check mini PC storage type/capacity
-- [ ] Check OpenWrt x86_64 image/driver compatibility with DS57U (Intel i211 / i218LM)
-- [ ] Perform early direct WAN connection testing with OCN after basic OpenWrt configuration
+Use the [manual index](README.md) for reconstruction and
+[execution histories](docs/history/README.md) for dated results and open
+verification items. Start a new acceptance checklist on each rebuild.
 
-## 12. Current Decision
-
-**Proceed with OpenWrt x86_64 as the primary candidate.**
-
-The biggest uncertainty is **OCN Virtual Connect (MAP-E)**.
-
-Therefore, before building all router features, perform direct WAN connection testing in this order to confirm feasibility early on:
-
-1. IPv6 IPoE
-2. MAP-E parameters
-3. IPv4 over IPv6
-4. Port sets
-
-After establishing an OCN connection on OpenWrt, gradually add the custom Rust `router-agent`, Web UI, MCP, and packet analysis/visualization features.
-
+VLANs, IoT/guest segmentation, IDS, custom Web UI, MCP, and application/flow
+classification remain future design work. Implement only separately selected
+features after routing and the bounded monitoring stack meet acceptance.
 ## References
 
 - OpenWrt: https://openwrt.org/
