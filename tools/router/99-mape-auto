@@ -1,0 +1,8 @@
+#!/bin/sh
+# Run reconciliation asynchronously so netifd's interface event path is never
+# blocked. The reconciler waits for DHCPv4/DHCPv6 state to settle.
+
+[ "$ACTION" = ifup ] || exit 0
+case "$INTERFACE" in
+    wan|wan6) /usr/sbin/mape-auto-reconcile >/dev/null 2>&1 & ;;
+esac
