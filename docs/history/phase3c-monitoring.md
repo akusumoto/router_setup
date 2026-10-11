@@ -1648,3 +1648,83 @@ Browser rendering was not checked; unchanged PromQL was not rerun.
 No failures or rollback. Rollback if needed: restore the saved JSON from
 `/tmp/openwrt-detailed.before-cpu-memory-row-20261004.json` (also copied to
 local ignored `backups/`) and recreate only Grafana with the same command.
+
+### 2026-10-12 JST - Current DHCP device inventory (read-only)
+
+Topology and cable state: no cable changes. Observed `br-lan` is UP with
+`192.168.1.1/24`. BUFFALO WAN is a reachable LAN neighbor; upstream cabling
+and BUFFALO's downstream DHCP server were not inspected.
+Baseline: current leases only; no configuration changes or backup required.
+
+Connection: `rtk proxy cmd.exe /c "ssh -tt -i .local-ssh/id_ed25519_v2 -o BatchMode=yes -o ConnectTimeout=10 root@192.168.1.1"`.
+The sandbox attempt exited `1` (`Permission denied`). The permitted retry
+connected, but stdin was closed without `tty=true`; reconnected with
+`tty=true` and reused that session for all router commands below.
+
+Commands in execution order and observed results:
+
+```text
+date -u '+%Y-%m-%dT%H:%M:%SZ'; echo date_exit=$?
+2026-10-11T16:49:18Z
+date_exit=0
+
+cat /tmp/dhcp.leases; echo leases_exit=$?
+1791764890 68:e1:dc:37:1d:10 192.168.1.2 buffalo-wan 01:68:e1:dc:37:1d:10
+leases_exit=0
+
+ip -4 addr show br-lan; echo lan_exit=$?
+5: br-lan: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc noqueue state UP qlen 1000
+    inet 192.168.1.1/24 brd 192.168.1.255 scope global br-lan
+       valid_lft forever preferred_lft forever
+lan_exit=0
+
+ip neigh show dev br-lan; echo neighbors_exit=$?
+Relevant IPv4 excerpt:
+192.168.1.2 lladdr 68:e1:dc:37:1d:10 ref 1 used 0/0/0 probes 1 REACHABLE
+192.168.1.239 used 0/0/0 probes 6 FAILED
+192.168.1.157 used 0/0/0 probes 6 FAILED
+neighbors_exit=0
+
+uci show dhcp.buffalo_wan; echo reservation_exit=$?
+dhcp.buffalo_wan=host
+dhcp.buffalo_wan.name='buffalo-wan'
+dhcp.buffalo_wan.mac='68:E1:DC:37:1D:10'
+dhcp.buffalo_wan.ip='192.168.1.2'
+reservation_exit=0
+
+ubus -v list dhcp; echo dhcp_methods_exit=$?
+Available methods: ipv6leases, ipv6ra, add_lease
+dhcp_methods_exit=0
+
+cat /tmp/hosts/odhcpd; echo ipv6_hosts_exit=$?
+cat: can't open '/tmp/hosts/odhcpd': No such file or directory
+ipv6_hosts_exit=1
+
+ubus call dhcp ipv6leases; echo ipv6leases_exit=$?
+ipv6leases_exit=0
+```
+
+The successful IPv6 response contained two bound/static entries on `br-lan`
+for `buffalo-wan`, both with DUID `0003000168e1dc371d10`, IAID `-600367856`,
+`accept-reconf=true`, and valid lifetime `5034` seconds:
+
+| Assignment | Value | Assigned ID | Preferred lifetime | Valid lifetime |
+|---|---|---|---|---|
+| Address | `fd57:3a20:c1d6::2` | 2 | 2334 seconds | 5034 seconds |
+| Delegated prefix | `fd57:3a20:c1d6:4::/62` | 4 | 2334 seconds | 5034 seconds |
+
+Local expiry conversion (exit `0`):
+
+```text
+rtk proxy powershell -NoProfile -Command "[DateTimeOffset]::FromUnixTimeSeconds(1791764890).ToOffset([TimeSpan]::FromHours(9)).ToString('yyyy-MM-dd HH:mm:ss zzz')"
+2026-10-12 09:28:10 +09:00
+```
+
+Verdict: one IPv4 DHCP lease at 2026-10-12 01:49:18 JST, with 7h 38m 52s
+remaining at that snapshot. The configured reservation matches the lease,
+and neighbor state was REACHABLE. The two IPv6 assignments belong to the
+same device, not two additional devices. Failed neighbor entries are not
+current DHCP leases. BUFFALO downstream clients and IPv6 SLAAC clients
+cannot be enumerated from this DHCP lease snapshot.
+No router settings changed; rollback not required. `exit` closed SSH with
+exit `0`. Local `rtk git diff --check` passed with exit `0`.

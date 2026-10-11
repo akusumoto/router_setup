@@ -423,3 +423,134 @@ sufficient to stop cable/replacement retries under the current automatic
 configuration.  Any future path requires ISP/service-side MAP-E provisioning
 information or a separately authorized, source-verified static configuration
 design; neither is inferred or applied here.
+
+### 2026-10-12 JST - Downstream static-route preflight (read-only)
+
+Requested route: `192.168.11.0/24` via `192.168.11.2` on DS57U.
+No cable changes. Observed LAN: `br-lan`, `192.168.1.1/24`, UP.
+No configuration changes or backup yet; requested next hop needs clarification.
+Used one persistent interactive SSH session:
+`rtk proxy cmd.exe /c "ssh -tt -i .local-ssh/id_ed25519_v2 -o BatchMode=yes -o ConnectTimeout=10 root@192.168.1.1"`.
+
+Commands in execution order and output:
+
+```text
+date -u '+%Y-%m-%dT%H:%M:%SZ'
+2026-10-11T16:52:29Z
+
+ip -4 route show; echo routes_exit=$?
+default dev map-mape_auto scope link
+172.17.0.0/16 dev docker0 scope link src 172.17.0.1
+192.168.1.0/24 dev br-lan scope link src 192.168.1.1
+routes_exit=0
+
+ip -4 route get 192.168.11.2; echo next_hop_exit=$?
+192.168.11.2 dev map-mape_auto src 153.243.13.0
+next_hop_exit=0
+
+ip -4 addr show br-lan; echo lan_exit=$?
+5: br-lan: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc noqueue state UP qlen 1000
+    inet 192.168.1.1/24 brd 192.168.1.255 scope global br-lan
+       valid_lft forever preferred_lft forever
+lan_exit=0
+
+uci show network | grep -E '=route|\.target=|\.netmask=|\.gateway=|\.interface='; echo configured_routes_exit=$?
+configured_routes_exit=1
+```
+
+Verdict: no matching configured static routes; grep exit `1` means no matches.
+The requested next hop is outside the directly connected LAN and currently
+resolves through the MAP-E default route. The observed BUFFALO WAN lease
+from the preceding inventory is `192.168.1.2`; that is the candidate next hop
+for its downstream `192.168.11.0/24`. Asked the user to resolve this address
+mismatch before changing configuration. No route applied, connectivity tests
+not run, rollback not required.
+
+### 2026-10-12 JST - Route BUFFALO LAN through reserved WAN address (executed)
+
+The user corrected the next hop to `192.168.1.2` and authorized adding
+`192.168.11.0/24` through it. No cable changes; LAN remained `br-lan` on
+`192.168.1.1/24`, with BUFFALO WAN reachable at `192.168.1.2`.
+One persistent interactive SSH session used the same command as the preflight.
+Router timestamp: `2026-10-11T16:54:13Z` (2026-10-12 01:54:13 JST).
+
+Commands in execution order (each displayed exit marker below was captured):
+
+```sh
+date -u '+%Y-%m-%dT%H:%M:%SZ'
+uci changes network; echo pending_exit=$?
+uci show network.buffalo_lan_route; echo existing_exit=$?
+ip -4 route show; echo routes_exit=$?
+ip neigh show 192.168.1.2; echo neighbor_exit=$?
+cp -p /etc/config/network /root/network.before-buffalo-route-20261012; echo backup_exit=$?
+sha256sum /root/network.before-buffalo-route-20261012; echo hash_exit=$?
+uci set network.buffalo_lan_route=route && uci set network.buffalo_lan_route.interface='lan' && uci set network.buffalo_lan_route.target='192.168.11.0' && uci set network.buffalo_lan_route.netmask='255.255.255.0' && uci set network.buffalo_lan_route.gateway='192.168.1.2'; echo stage_exit=$?
+uci changes network; echo diff_exit=$?
+uci commit network; echo commit_exit=$?
+/etc/init.d/network reload; echo reload_exit=$?
+uci show network.buffalo_lan_route; echo persisted_exit=$?
+ip -4 route show; echo routes_exit=$?
+ip -4 route get 192.168.11.1; echo lookup_exit=$?
+ping -c 3 -W 2 192.168.1.2; echo gateway_ping_exit=$?
+ping -c 3 -W 2 192.168.11.1; echo downstream_ping_exit=$?
+```
+
+Baseline: pending changes empty, `pending_exit=0`; named route absent
+(`uci: Entry not found`, `existing_exit=1`, expected). Routes matched the
+preceding preflight (`routes_exit=0`); neighbor was
+`192.168.1.2 dev br-lan lladdr 68:e1:dc:37:1d:10 ... REACHABLE`
+(`neighbor_exit=0`). Backup and SHA-256 commands exited `0`:
+
+```text
+e71dde0ee1d46577d2d59fe169cee3ce7ec46f6bd36ea1e68718312eb0fe3bcf  /root/network.before-buffalo-route-20261012
+```
+
+Staging, diff, commit, reload, persisted-config, route-list, and lookup exit
+statuses were all `0`. Exact configuration addition (the staged diff showed
+only these five settings):
+
+```text
+network.buffalo_lan_route=route
+network.buffalo_lan_route.interface='lan'
+network.buffalo_lan_route.target='192.168.11.0'
+network.buffalo_lan_route.netmask='255.255.255.0'
+network.buffalo_lan_route.gateway='192.168.1.2'
+```
+
+Observed live routes and lookup:
+
+```text
+default dev map-mape_auto scope link
+172.17.0.0/16 dev docker0 scope link src 172.17.0.1
+192.168.1.0/24 dev br-lan scope link src 192.168.1.1
+192.168.11.0/24 via 192.168.1.2 dev br-lan
+
+192.168.11.1 via 192.168.1.2 dev br-lan src 192.168.1.1
+```
+
+Observed ping results:
+
+```text
+192.168.1.2:
+seq=0 ttl=64 time=0.664 ms
+seq=1 ttl=64 time=0.583 ms
+seq=2 ttl=64 time=0.613 ms
+3 packets transmitted, 3 packets received, 0% packet loss
+round-trip min/avg/max = 0.583/0.620/0.664 ms
+gateway_ping_exit=0
+
+192.168.11.1:
+seq=0 ttl=64 time=0.536 ms
+seq=1 ttl=64 time=0.639 ms
+seq=2 ttl=64 time=0.665 ms
+3 packets transmitted, 3 packets received, 0% packet loss
+round-trip min/avg/max = 0.536/0.613/0.665 ms
+downstream_ping_exit=0
+```
+
+Verdict: PASS for committed route, live route selection, and DS57U-to-BUFFALO
+WAN/LAN ICMP reachability. No firewall changes. Downstream host access,
+application access, and reboot persistence were not tested. No failed
+mutation or rollback. Route-only rollback (not executed):
+`uci delete network.buffalo_lan_route; uci commit network; /etc/init.d/network reload`.
+The full pre-change network backup remains on the router at the path above.

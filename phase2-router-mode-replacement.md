@@ -192,6 +192,40 @@ Acceptance requires carrier `1`, a usable direct IPv6 default route, a live
 IPv6 pings.  Reconnect the PC to BUFFALO LAN after collecting the results and
 record the exact outputs and exit statuses in the replacement history.
 
+## 6.1 Optional route to BUFFALO LAN
+
+To route DS57U traffic to `192.168.11.0/24`, use BUFFALO's reserved WAN
+address `192.168.1.2` as the next hop on `lan`. First check `uci changes network`
+for unrelated pending changes and back up `/etc/config/network`.
+
+```sh
+uci set network.buffalo_lan_route=route
+uci set network.buffalo_lan_route.interface='lan'
+uci set network.buffalo_lan_route.target='192.168.11.0'
+uci set network.buffalo_lan_route.netmask='255.255.255.0'
+uci set network.buffalo_lan_route.gateway='192.168.1.2'
+uci commit network
+/etc/init.d/network reload
+uci show network.buffalo_lan_route
+ip -4 route get 192.168.11.1
+ping -c 3 -W 2 192.168.1.2
+ping -c 3 -W 2 192.168.11.1
+```
+
+Expected lookup: `192.168.11.1 via 192.168.1.2 dev br-lan src 192.168.1.1`.
+Accept only after the committed route appears in the live routing table.
+Successful gateway pings establish router reachability; downstream host and
+application access still depend on BUFFALO firewall policy and host settings.
+Reboot persistence requires a separate runtime check.
+
+To remove this route:
+
+```sh
+uci delete network.buffalo_lan_route
+uci commit network
+/etc/init.d/network reload
+```
+
 ## 7. Failure handling and rollback
 
 Use the verified Phase 2 automation; do not guess MAP-E values or add a competing static MAP interface.  If DS57U does not
