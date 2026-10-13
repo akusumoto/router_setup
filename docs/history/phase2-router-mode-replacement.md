@@ -554,3 +554,54 @@ application access, and reboot persistence were not tested. No failed
 mutation or rollback. Route-only rollback (not executed):
 `uci delete network.buffalo_lan_route; uci commit network; /etc/init.d/network reload`.
 The full pre-change network backup remains on the router at the path above.
+
+### 2026-10-14 JST - Document direct-ONU BUFFALO fallback (local documentation only)
+
+The user requested an offline fallback procedure before applying the proposed
+IPv6 relay settings. Expanded the replacement manual's Section 7 and linked
+it from docs/plans/ipv6-relay.md. The existing short cable rollback omitted
+the BUFFALO automatic-mode settings and the distinction between recovering
+BUFFALO client Internet and optionally reconnecting OpenWrt underneath it.
+
+The written procedure restores Internet/IPv6 automatic detection with
+「インターネット＠スタートを行う」, preserves router mode and the existing
+BUFFALO LAN, removes the OpenWrt-LAN-to-BUFFALO-WAN connection, and moves
+the ONU uplink from OpenWrt eth0 to BUFFALO WAN. It retains independent
+OpenWrt IPv4 management. Optional subordinate OpenWrt reconnection follows
+only after client recovery and restoration of pre-relay DHCP/firewall files;
+MAP-E cleanup remains an explicit verification gate.
+
+No SSH command, router mutation, service restart, configuration restore,
+backup creation, cable move, reboot, or Internet test was executed this turn.
+Topology is the previously recorded OpenWrt-primary topology; it was not
+re-inspected live for this documentation-only change. The complete fallback
+after a relay trial is planned and untested, not marked as passed.
+
+Reviewed current replacement/manual rollback sections, the proposed relay
+plan, Phase 2 MAP cleanup instructions, and BUFFALO's primary
+[Internet setup guide](https://www.buffalo.jp/support/faq/detail/124144869.html).
+Exact automatic-mode labels and original unchecked bridge permission come
+from the supplied WSR-6000AX8 screenshots. Previous October 1 fallback
+evidence informed the subordinate topology; it does not validate this new
+post-relay procedure.
+
+Local checks, execution order:
+
+```text
+rtk git status --short
+exit 0; prior phase2/phase3c history edits and untracked docs/plans preserved.
+
+rtk git diff --check
+exit 0; LF-to-CRLF warnings only.
+
+rtk proxy rg -n '### 7' phase2-router-mode-replacement.md
+exit 0; sections 7.1, 7.2, 7.3 present.
+
+rtk proxy powershell -NoProfile -Command "Get-Content -Encoding UTF8 'docs/plans/ipv6-relay.md' -Tail 18; Test-Path 'phase2-router-mode-replacement.md'; Test-Path 'phase2-setup.md'; Test-Path 'docs/history/phase2-router-mode-replacement.md'"
+exit 0; relay rollback link present, all three local link targets exist.
+```
+
+Confirmed the local target headings for the new fallback link, relay rollback,
+and Phase 2 Reverting MAP Settings. No router rollback was performed. The
+procedure requires recording actual backup paths/hashes and hardware/runtime
+results when executed; this documentation entry is not such evidence.

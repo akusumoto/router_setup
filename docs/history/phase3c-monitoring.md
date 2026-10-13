@@ -1728,3 +1728,243 @@ current DHCP leases. BUFFALO downstream clients and IPv6 SLAAC clients
 cannot be enumerated from this DHCP lease snapshot.
 No router settings changed; rollback not required. `exit` closed SSH with
 exit `0`. Local `rtk git diff --check` passed with exit `0`.
+
+### 2026-10-13 JST - Intermittent smartphone Internet investigation (read-only)
+
+The user confirmed the incident window as **2026-10-12 09:00-09:30 JST**.
+Router time at first capture was `2026-10-13T00:19:47+09:00`; the session
+clock independently returned `2026-10-12 15:20:18 UTC`. No clock correction
+was made. Diagnostics ran approximately 00:19-00:27 JST.
+
+Topology and cable state: current IPv4 default is `map-mape_auto` on DS57U;
+physical WAN `eth0` and LAN `eth1` have carrier 1 and speed 1000 Mbps.
+BUFFALO WAN has the expected lease `192.168.1.2` /
+`68:e1:dc:37:1d:10`; downstream route is
+`192.168.11.0/24 via 192.168.1.2 dev br-lan`.
+SSH was observed from `192.168.1.2`, consistent with access through BUFFALO.
+No cables moved. Phone Wi-Fi association, model, settings, and simultaneous
+impact on other clients were not confirmed.
+
+Baseline/rollback: clean worktree at start. No UCI changes, service restarts,
+firewall reloads, or reboots performed. No configuration backup was needed
+for these read-only checks. Rollback not required or run.
+
+#### Commands and collection failures
+
+Local commands used `rtk`. Initial local heading search containing a pipe
+failed because the wrapper passed it to a shell (`'history' is not recognized`,
+exit 1); corrected with `rtk read docs/history/README.md`.
+Another combined regex search failed with `'###' is not recognized`, exit 1;
+corrected with `rtk proxy rg -n 2026-10 docs/history/phase3c-monitoring.md`.
+
+Initial `rtk proxy ssh -tt -i ...` failed before SSH because `-i` was an
+ambiguous PowerShell shim parameter. Corrected command:
+`rtk proxy cmd.exe /c "ssh -tt -i .local-ssh/id_ed25519_v2 -o BatchMode=yes -o ConnectTimeout=10 root@192.168.1.1"`.
+The sandbox attempt failed with `Permission denied`, exit 1; the same
+read-only command succeeded with approved elevated network access.
+One persistent SSH session was then used throughout.
+
+Initial router commands, in order:
+
+```sh
+date -Iseconds; uptime; ubus call system board; ubus call network.interface.wan status; ubus call network.interface.wan6 status; ubus call network.interface.mape_auto status; ip -4 route; ip -6 route; cat /tmp/dhcp.leases; free; cat /proc/sys/net/netfilter/nf_conntrack_count /proc/sys/net/netfilter/nf_conntrack_max; ip -s link show eth0; ip -s link show eth1; logread | tail -n 180
+```
+
+The MAP-E status included a very large firewall array, so returned output was
+truncated; it is not a complete baseline export. Subsequent queries were
+bounded. An overlong submitted shell line was truncated inside a quoted
+argument and left the continuation prompt; Ctrl-C cancelled it, and commands
+were resubmitted individually below. `stty` is unavailable; `ip -s link` is
+unsupported by this BusyBox build. Kernel sysfs counters replaced that check.
+
+Executed follow-up command batches, in order (the `run` helper reports the
+last command's exit status in a group; it does not prove every earlier
+command in that group succeeded):
+
+
+
+```sh
+stty cols 240
+run() { printf '\n$ %s\n' "$*"; sh -c "$*"; printf 'exit=%s\n' "$?"; }
+run 'date -Iseconds; uptime; for n in wan wan6 mape_auto lan; do echo "$n"; ubus call network.interface.$n status | jsonfilter -e @.up -e @.uptime -e @.l3_device; done'
+run 'ip -4 route; ip -6 route | head -n 12; free; cat /proc/sys/net/netfilter/nf_conntrack_count /proc/sys/net/netfilter/nf_conntrack_max'
+run 'ip -s link show eth0; ip -s link show eth1; ip -s link show map-mape_auto; cat /tmp/dhcp.leases'
+run 'logread | head -n 3; logread | grep -v "ra_lifetime to 0" | tail -n 45'
+run 'dmesg | grep -Ei "oom|out of memory|watchdog|link is|reset|conntrack|error" | tail -n 25; uci show dhcp.lan; uci changes'
+run 'curl -s --max-time 5 http://127.0.0.1:9090/api/v1/status/flags; ls -l /tmp/router* /opt/phase3c/performance /usr/local/sbin/router* 2>/dev/null'
+run 'for n in eth0 eth1 map-mape_auto; do echo "$n"; for f in carrier speed statistics/rx_errors statistics/tx_errors statistics/rx_dropped statistics/tx_dropped; do printf "%s=" "$f"; cat /sys/class/net/$n/$f; done; done'
+run 'ping -c 5 -W 2 192.168.1.2; ping -c 5 -W 2 192.168.11.1; ping -c 5 -W 2 1.1.1.1'
+run 'nslookup example.com 127.0.0.1; curl -4 -I -sS --max-time 15 https://example.com; curl -6 -I -sS --max-time 15 https://example.com'
+run 'cat /opt/phase3c/performance/latest; cat /etc/resolv.conf; cat /tmp/resolv.conf.d/resolv.conf.auto; ps | grep -E "dnsmasq|odhcp|ntpd"'
+run 'logread | grep "Oct 12 09:"; logread | grep -Ei "netifd|oom|failed|timeout|dnsmasq.*(start|exit)|link.*down" | tail -n 20'
+run 'curl -s --max-time 5 http://127.0.0.1:9100/metrics | grep -E "router_wan|node_network_carrier|node_nf_conntrack"'
+run 'curl -s --max-time 5 http://127.0.0.1:9100/metrics | grep -E "probe|performance"'
+```
+
+Then these historical queries, each returning API `status=success` and curl
+`rc=0`. The endpoint time is 09:30 JST; a 30-minute range selects samples
+after 09:00 through 09:30.
+
+```sh
+curl -sS --max-time 8 -G http://127.0.0.1:9090/api/v1/query --data-urlencode 'query=min_over_time(router_wan_probe_success[30m])' --data-urlencode 'time=2026-10-12T00:30:00Z'; echo rc=$?
+curl -sS --max-time 8 -G http://127.0.0.1:9090/api/v1/query --data-urlencode 'query=count_over_time(router_wan_probe_success[30m])' --data-urlencode 'time=2026-10-12T00:30:00Z'; echo rc=$?
+curl -sS --max-time 8 -G http://127.0.0.1:9090/api/v1/query --data-urlencode 'query=max_over_time(router_wan_probe_packet_loss_ratio[30m])' --data-urlencode 'time=2026-10-12T00:30:00Z'; echo rc=$?
+curl -sS --max-time 8 -G http://127.0.0.1:9090/api/v1/query --data-urlencode 'query=max_over_time(router_wan_probe_rtt_seconds[30m])' --data-urlencode 'time=2026-10-12T00:30:00Z'; echo rc=$?
+curl -sS --max-time 8 -G http://127.0.0.1:9090/api/v1/query --data-urlencode 'query=min_over_time(up[30m])' --data-urlencode 'time=2026-10-12T00:30:00Z'; echo rc=$?
+curl -sS --max-time 8 -G http://127.0.0.1:9090/api/v1/query --data-urlencode 'query=count_over_time(up[30m])' --data-urlencode 'time=2026-10-12T00:30:00Z'; echo rc=$?
+curl -sS --max-time 8 -G http://127.0.0.1:9090/api/v1/query --data-urlencode 'query=changes(node_network_carrier_changes_total[30m])' --data-urlencode 'time=2026-10-12T00:30:00Z'; echo rc=$?
+curl -sS --max-time 8 -G http://127.0.0.1:9090/api/v1/query --data-urlencode 'query=increase(node_network_transmit_errs_total[30m])' --data-urlencode 'time=2026-10-12T00:30:00Z'; echo rc=$?
+curl -sS --max-time 8 -G http://127.0.0.1:9090/api/v1/query --data-urlencode 'query=max_over_time(node_nf_conntrack_entries[30m])' --data-urlencode 'time=2026-10-12T00:30:00Z'; echo rc=$?
+curl -sS --max-time 8 -G http://127.0.0.1:9090/api/v1/query --data-urlencode 'query=max_over_time(node_load1[30m])' --data-urlencode 'time=2026-10-12T00:30:00Z'; echo rc=$?
+curl -sS --max-time 8 -G http://127.0.0.1:9090/api/v1/query --data-urlencode 'query=min_over_time(node_memory_MemAvailable_bytes[30m])' --data-urlencode 'time=2026-10-12T00:30:00Z'; echo rc=$?
+curl -sS --max-time 8 -G http://127.0.0.1:9090/api/v1/query --data-urlencode 'query={__name__=~"router_performance.*"}' --data-urlencode 'time=2026-10-12T00:30:00Z'; echo rc=$?
+```
+
+Then:
+
+```sh
+run 'curl -sS -I --max-time 5 http://192.168.11.1/; curl -sS -I --max-time 5 http://192.168.1.2/'
+curl -sS --max-time 8 -G http://127.0.0.1:9090/api/v1/query --data-urlencode 'query=changes(node_boot_time_seconds[30m])' --data-urlencode 'time=2026-10-12T00:30:00Z'; echo rc=$?
+curl -sS --max-time 8 -G http://127.0.0.1:9090/api/v1/query --data-urlencode 'query=increase(node_network_transmit_drop_total[30m])' --data-urlencode 'time=2026-10-12T00:30:00Z'; echo rc=$?
+run 'fw4 check; cat /etc/crontabs/root; sha256sum /usr/local/sbin/router-performance-hourly; ubus call network.interface.wan6 status | jsonfilter -e @.ipv6-prefix; ubus call dhcp ipv6leases'
+run 'fw4 check 2>&1 | tail -n 2; nft list chain inet fw4 mape_auto_icmp_snat; cat /etc/nftables.d/mape-auto-icmp.nft'
+ubus call network.interface.wan6 status | jsonfilter -e '@["ipv6-prefix"]'; echo rc=$?
+sha256sum /usr/local/sbin/router-performance-hourly
+run 'nft list ruleset | grep -E "icmp|mape" | head -n 20; find /etc /usr/share/nftables.d -name "*mape*" 2>/dev/null'
+exit
+```
+
+Other corrected failures: the initially assumed
+`phase3c/wan-probe/router-wan-probe.sh` does not exist; inspected the actual
+Lua collector instead. `jsonfilter -e @.ipv6-prefix` failed parsing the hyphen;
+the quoted expression `@["ipv6-prefix"]` succeeded and returned `[ ]`.
+Guessed chain `mape_auto_icmp_snat` and path
+`/etc/nftables.d/mape-auto-icmp.nft` were absent (group exit 1).
+The subsequent ruleset/path discovery found the installed ICMP SNAT rule
+and `/etc/mape-auto-icmp.nft`; these failed guesses are not evidence of an
+absent working rule.
+
+#### Historical results: October 12, 09:00-09:30 JST
+
+All historical vectors carried `instance=127.0.0.1:9100`, `job=openwrt`,
+evaluation timestamp `1791765000`. Relevant returned values:
+
+| Query | Observed value |
+|---|---|
+| min_over_time(router_wan_probe_success[30m]) | 1 |
+| count_over_time(router_wan_probe_success[30m]) | 60 |
+| max_over_time(router_wan_probe_packet_loss_ratio[30m]) | 0 |
+| max_over_time(router_wan_probe_rtt_seconds[30m]) | 0.006553 seconds |
+| min_over_time(up[30m]) | 1 |
+| count_over_time(up[30m]) | 60 |
+| changes(node_network_carrier_changes_total[30m]) | 0 for eth0, eth1, br-lan, map-mape_auto and lo |
+| increase(node_network_transmit_errs_total[30m]) | 0 for all returned devices, including map-mape_auto |
+| increase(node_network_transmit_drop_total[30m]) | 0 for all returned devices |
+| changes(node_boot_time_seconds[30m]) | 0 |
+| max_over_time(node_nf_conntrack_entries[30m]) | 425 |
+| max_over_time(node_load1[30m]) | 0.2 |
+| min_over_time(node_memory_MemAvailable_bytes[30m]) | 7702056960 bytes |
+
+The repository collector confirms each WAN sample is a router-originated
+three-packet ping to `1.1.1.1`; success means at least one reply.
+The separate packet-loss metric was zero for every observed sample.
+These 30-second samples do not establish continuous coverage between probes,
+historical DNS/HTTPS success, or connectivity from the phone.
+
+Historical performance values at 09:30:
+
+```text
+router_performance_last_run_timestamp_seconds 1791763200  # 09:00 JST
+router_performance_run_success 1
+router_performance_download_valid 1
+router_performance_upload_valid 1
+router_performance_download_valid_samples 3
+router_performance_upload_valid_samples 3
+router_performance_download_aggregate_mbps 674.157
+router_performance_upload_aggregate_mbps 560.748
+router_performance_download_single_mbps 227.384
+router_performance_upload_single_mbps 253.389
+```
+
+Cron is `0 * * * * /usr/local/sbin/router-performance-hourly`.
+The installed script SHA-256 matches the repository file:
+`4c028561a0bda923bcb84c07ed7c70df57a20affa96f7a3270a42a34251ec6d6`.
+It performs three parallel 25 MB downloads followed by three parallel 25 MB
+uploads. A traffic burst at 09:00 is confirmed; interference with the phone
+is a hypothesis, not an observed cause. The `cron.err ... USER root ... cmd`
+line itself contains no job failure result; the saved metrics show this run
+succeeded.
+
+Retained syslog begins October 10 at 00:07:52. Relevant verbatim lines
+(line wrapping removed for readability):
+
+```text
+Mon Oct 12 08:38:13 2026 daemon.info dnsmasq-dhcp[1]: DHCPREQUEST(br-lan) 192.168.1.2 68:e1:dc:37:1d:10
+Mon Oct 12 08:38:13 2026 daemon.info dnsmasq-dhcp[1]: DHCPACK(br-lan) 192.168.1.2 68:e1:dc:37:1d:10 buffalo-wan
+Mon Oct 12 09:00:00 2026 cron.err crond[2220]: USER root pid 19667 cmd /usr/local/sbin/router-performance-hourly
+Mon Oct 12 09:02:48 2026 daemon.warn odhcpd[2156]: A default route is present but there is no public prefix on lan thus we announce no default route by setting ra_lifetime to 0!
+Mon Oct 12 09:10:45 2026 daemon.warn odhcpd[2156]: A default route is present but there is no public prefix on lan thus we announce no default route by setting ra_lifetime to 0!
+Mon Oct 12 09:18:08 2026 daemon.warn odhcpd[2156]: A default route is present but there is no public prefix on lan thus we announce no default route by setting ra_lifetime to 0!
+Mon Oct 12 09:24:51 2026 daemon.warn odhcpd[2156]: A default route is present but there is no public prefix on lan thus we announce no default route by setting ra_lifetime to 0!
+```
+
+Warnings recur throughout the retained days, including after the reported
+recovery. No retained netifd down event, timeout, DNS process restart,
+out-of-memory event, or failed lease acquisition matched the bounded searches.
+Kernel link changes exist earlier in the boot; the latest retained WAN
+link-up was at uptime 434340.538419 seconds, much earlier than the incident
+(current uptime about 1206322 seconds).
+
+#### Current results and verification limits
+
+- Router uptime approximately 13 days 23 hours. `wan` DHCP is pending/down;
+  `wan6` and `mape_auto` are up, with roughly 8.9 days uptime. IPv4 uses
+  MAP-E, so the raw DHCP `wan` status alone does not demonstrate an outage.
+- Memory available: 7570832 KiB. Conntrack 302 of 262144 in the baseline.
+- Physical eth0/eth1 RX/TX errors zero; eth0 cumulative TX drops 13,
+  eth1 drops zero. MAP-E cumulative TX errors/drops 494 each, but no
+  increments occurred in the incident window. Virtual tunnel speed
+  is unsupported (`Invalid argument`), not a physical link-speed failure.
+- Pings to BUFFALO WAN, BUFFALO LAN gateway, and 1.1.1.1 each returned 5/5,
+  zero loss. Internet average RTT 5.029 ms.
+- `nslookup example.com 127.0.0.1` returned A and AAAA records.
+  IPv4 and IPv6 router-originated HTTPS HEAD each returned HTTP/2 200;
+  the group exit was 0. This proves current router DNS and both WAN families,
+  not historical DNS or downstream-phone IPv6.
+- Upstream `wan6` has no delegated public IPv6 prefix. LAN DHCPv6/RA are
+  configured as servers. BUFFALO has bound ULA address `fd57:3a20:c1d6::2`
+  and ULA delegated prefix `fd57:3a20:c1d6:4::/62`, with valid lifetime 4889
+  seconds at capture. The LAN IPv6 warning explicitly reports withholding
+  an IPv6 default route; it does not establish a transient IPv4 outage.
+  Public IPv6 from BUFFALO clients remains unverified.
+- `fw4 check` printed `Ruleset passes nftables check.` It also warned that
+  generated MAP ICMP entries specifying ports without UDP/TCP were ignored.
+  A live custom ICMP echo-request SNAT rule was observed with nonzero counter,
+  comment `mape-auto ICMP identifiers`. Router IPv4 ping works.
+  The grouped check does not preserve the individual fw4 exit code.
+- HTTP HEAD to both BUFFALO addresses timed out (curl 28 each, group exit 28).
+  Both addresses answered ping. This does not prove BUFFALO administration
+  or forwarding failed; no authenticated BUFFALO logs or Wi-Fi client data
+  were accessible in this investigation.
+- `uci changes` returned no pending changes. SSH `exit` closed the session.
+
+Verdict: no observed OpenWrt WAN outage, link flap, reboot, resource exhaustion,
+or growing tunnel TX errors during the confirmed 30-minute window.
+IPv6 LAN limitations and the 09:00 scheduled traffic burst are recorded
+findings, neither established as the smartphone's cause. Root cause remains
+unresolved without BUFFALO/phone evidence. During a recurrence, identify the
+phone's IP/gateway and test BUFFALO gateway reachability, public IPv4, and DNS;
+obtain BUFFALO Wi-Fi/system logs for the exact incident time. These follow-up
+checks are planned and were not run.
+
+Ignored captured transcript (PTY artifacts retained; some returned outputs
+were truncated, not a complete log export):
+`backups/2026-10-13-phone-outage/captured-transcript.txt`,
+SHA-256 `c6f522d33e5270d7edcf359fff412607ef7d5b029c0bb75a65b7c1e2676428fe`.
+Live MAP/WAN identifiers and SSH fingerprint were redacted in the saved
+transcript. Relevant bounded results are recorded above.
+
+Local documentation validation: initial `rtk git diff --check` found a new
+blank line at EOF (exit 1). The trailing blank line was removed; the retest
+passed with exit 0 (only the repository's LF-to-CRLF warning).
+No rebuild procedure changed.

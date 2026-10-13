@@ -719,3 +719,878 @@ lost. Verdict: ICMP cause identified and fixed; automation deployed; syntax,
 firewall reload, missing-option reconciliation, hook invocation, IPv4 ping,
 IPv4 HTTPS, IPv6, and DNS PASS. Reboot, physical reconnect, new-prefix
 allocation, and return-to-BUFFALO cleanup were not run in this change.
+
+### 2026-10-13 JST - Investigate missing upstream public IPv6 delegation (executed)
+
+Scope: determine whether OpenWrt disabled DHCPv6 prefix requests or the
+upstream service did not provide a delegated prefix. The user confirmed
+**no Hikari Denwa subscription**. This is diagnostic work; it did not enable
+LAN IPv6 or repair the earlier smartphone outage.
+
+Topology: unchanged direct-ONU DS57U WAN eth0, DS57U br-lan/eth1 to BUFFALO
+WAN 192.168.1.2, BUFFALO LAN 192.168.11.0/24. No cable moves.
+Current IPv4 uses map-mape_auto. Investigation approximately 00:50-00:56 JST.
+Worktree already had the earlier investigation edit to
+`docs/history/phase3c-monitoring.md`; that edit was preserved.
+
+No UCI writes, restarts of existing clients/services, firewall reloads, or
+reboots. Temporary capture and diagnostic log files were created in /tmp.
+A separate DHCPv6 process failed during ubus initialization before reaching
+a DHCP transaction. The capture and its timer completed. No configuration
+backup/rollback was needed, and rollback was not run.
+
+#### Commands in execution order
+
+Opened one persistent SSH connection with the authorized read-only network
+escalation:
+
+```powershell
+rtk proxy cmd.exe /c "ssh -tt -i .local-ssh/id_ed25519_v2 -o BatchMode=yes -o ConnectTimeout=10 root@192.168.1.1"
+```
+
+Initial commands:
+
+```sh
+date -Iseconds; uptime; echo rc=$?
+uci show network.wan6; uci show network.lan; uci show dhcp.lan; uci changes; echo rc=$?
+ps ww | grep '[o]dhcp6c'; odhcp6c -h 2>&1 | head -n 60; echo rc=$?
+ubus call network.interface.wan6 status | sed '/"data": {/,/^[[:space:]]*}/d'; echo rc=$?
+grep -n -E 'reqprefix|reqaddress|forceprefix|noslaac|delegate|odhcp6c|prefix' /lib/netifd/proto/dhcpv6.sh; echo rc=$?
+logread | grep -Ei 'odhcp6c|NoPrefixAvail|dhcpv6|wan6|prefix' | grep -v 'ra_lifetime to 0' | tail -n 35; echo rc=$?
+ls -l /tmp/*dhcpv6* /tmp/*onu* 2>/dev/null; command -v tcpdump; command -v timeout; echo rc=$?
+```
+
+Then inspected the retained October 1 packet capture and installed request
+logic (pipeline status is the last command's status, not every command):
+
+```sh
+tcpdump -nn -vvv -r /tmp/direct-onu-dhcpv6.pcap 'udp port 546 or udp port 547' 2>/dev/null | head -n 24; echo rc=$?
+sed -n '80,110p' /lib/netifd/proto/dhcpv6.sh; sed -n '190,206p' /lib/netifd/proto/dhcpv6.sh; ip -6 route | head -n 12; echo rc=$?
+```
+
+Both groups printed rc=0. A bounded diagnostic capture and separate client
+were started:
+
+```sh
+tcpdump -ni eth0 -s 0 -U -c 60 -w /tmp/pd-probe-20261013.pcap 'udp port 546 or udp port 547 or (icmp6 and ip6[40] == 134)' >/tmp/pd-probe-20261013.capture.log 2>&1 & pd_cap_pid=$!; echo capture_pid=$pd_cap_pid
+odhcp6c -s /bin/true -p /tmp/pd-probe-20261013.pid -Nnone -P0 -F -c00030001020000131013 -t10 -e -l7 eth0 >/tmp/pd-probe-20261013.client.log 2>&1 & pd_client_pid=$!; echo diagnostic_client_pid=$pd_client_pid
+(sleep 20; kill -TERM "$pd_client_pid" 2>/dev/null; kill -INT "$pd_cap_pid" 2>/dev/null) & pd_timer_pid=$!; echo timer_pid=$pd_timer_pid
+cat /tmp/pd-probe-20261013.client.log; echo rc=$?; ps ww | grep '[o]dhcp6c'
+tcpdump -nn -vvv -r /tmp/direct-onu-dhcpv6.pcap 'icmp6 and ip6[40] == 134' 2>/dev/null | head -n 12; echo rc=$?
+wait "$pd_client_pid"; echo diagnostic_exit=$?; wait "$pd_cap_pid"; echo capture_exit=$?; wait "$pd_timer_pid"; echo timer_exit=$?; cat /tmp/pd-probe-20261013.capture.log
+command -v rdisc6; command -v ndisc6; ubus -v list 'odhcp6c*'; echo rc=$?
+tcpdump -nn -vvv -r /tmp/direct-onu-dhcpv6.pcap 'icmp6 and ip6[40] == 134 and src host fe80::212:e2ff:fe70:5250' 2>/dev/null | head -n 8; echo rc=$?
+tcpdump -nn -vvv -r /tmp/pd-probe-20261013.pcap 2>/dev/null | head -n 20; echo rc=$?
+ubus call odhcp6c.eth0 get_state | head -n 100; echo rc=$?; ubus call odhcp6c.eth0 get_statistics | head -n 90; echo rc=$?
+date -Iseconds; ps ww | grep '[o]dhcp6c'; ubus call network.interface.wan6 status | jsonfilter -e @.up -e @.uptime -e '@["ipv6-prefix"]'; ubus call network.interface.mape_auto status | jsonfilter -e @.up -e @.uptime; echo rc=$?
+ping -c 3 -W 2 1.1.1.1; echo ping4_rc=$?; curl -6 -sS --max-time 15 -o /dev/null -w 'IPv6_HTTPS=%{http_code}\n' https://example.com; echo curl6_rc=$?; uci changes
+sha256sum /tmp/pd-probe-20261013.pcap /tmp/pd-probe-20261013.capture.log /tmp/pd-probe-20261013.client.log /tmp/direct-onu-dhcpv6.pcap; echo rc=$?
+exit
+```
+
+The separate client used a distinct synthetic DUID, no address request
+(`-Nnone`), automatic prefix request (`-P0`), force-prefix (`-F`),
+and the inert callback `/bin/true`. It failed with:
+
+```text
+Disconnecting from ubus
+ubus error: Invalid argument
+[2]- Done(1) odhcp6c ...
+```
+
+The later `wait "$pd_client_pid"` printed 127 because that exited background
+job was no longer waitable; this is not its original process exit code.
+The background job notification recorded the original exit as 1.
+The existing client remained PID 27265, with WAN uptimes continuing.
+The [upstream ubus implementation](https://github.com/openwrt/odhcp6c/blob/master/src/ubus.c)
+registers one `odhcp6c.<interface>` object; the already-existing
+`odhcp6c.eth0` object and duplicate registration failure are consistent.
+No fresh DHCPv6 rejection was captured; do not report otherwise.
+
+Capture/timer wait statuses were 0. Capture output:
+
+```text
+1 packet captured
+1 packet received by filter
+0 packets dropped by kernel
+```
+
+Neither `timeout`, `rdisc6`, nor `ndisc6` was available. The initial
+availability group printed rc=127 from missing `timeout`; the explicit
+sleep/kill timer was used instead. Read-only ubus get_state/get_statistics
+were used, not the listed renew/release/reconfigure methods.
+
+#### Current configuration and observations
+
+Relevant UCI output:
+
+```text
+network.wan6=interface
+network.wan6.device='eth0'
+network.wan6.proto='dhcpv6'
+network.wan6.iface_map='1'
+network.lan=interface
+network.lan.device='br-lan'
+network.lan.proto='static'
+network.lan.ipaddr='192.168.1.1/24'
+network.lan.ip6assign='60'
+dhcp.lan.dhcpv6='server'
+dhcp.lan.ra='server'
+dhcp.lan.ra_slaac='1'
+dhcp.lan.ra_flags='managed-config' 'other-config'
+```
+
+No explicit reqprefix=no or delegate=0 is present. The installed
+`/lib/netifd/proto/dhcpv6.sh` maps unset/auto reqprefix to 0 and appends
+`-P` unless reqprefix is no. Actual running command, live DUID redacted:
+
+```text
+27265 root odhcp6c -s /lib/netifd/dhcpv6.script -P0:a1a5b3d2 -c[REDACTED_LIVE_DUID] -r94 -r95 -r96 -t120 eth0
+```
+
+Installed help explicitly says `-P <[pfx/]len> Request IPv6-Prefix (0 = auto)`.
+Thus prefix requests are enabled; ip6assign=60 describes downstream allocation,
+not a fixed /60 request to the upstream. No request-size correction was made.
+
+At 00:55:05 JST, wan6 up=true, uptime=774043 seconds,
+ipv6-prefix=[ ]; mape_auto up=true, uptime=770558 seconds.
+The live odhcp6c get_state had:
+
+```text
+DHCPV6_STATE: BOUND_PROCESSING
+SERVER: fe80::212:e2ff:fe70:5250
+PREFIXES: []
+ADDRESSES: []
+RA_ADDRESSES: one public address, length 64
+RA_ROUTES: default via fe80::212:e2ff:fe70:5250, valid 1800
+RA_ROUTES: matching on-link public /64, valid 2592000
+```
+
+This distinguishes a SLAAC/RA WAN address from a DHCPv6 delegated prefix.
+The current statistics were:
+
+```text
+dhcp_solicit: 1
+dhcp_advertise: 1
+dhcp_request: 0
+dhcp_renew: 0
+dhcp_rebind: 0
+dhcp_reply: 9
+dhcp_information_request: 9
+dhcp_discarded_packets: 0
+dhcp_transmit_failures: 0
+```
+
+No relevant odhcp6c/NoPrefixAvail lines remained in the current syslog.
+These counters establish successful information exchanges and no DHCP
+address/prefix lease transaction in this client's lifetime; they do not
+retain the ADVERTISE status code.
+
+The fresh capture supplied one upstream RA, at **00:53:19.738271 JST**:
+
+```text
+fe80::212:e2ff:fe70:5250 > ff02::1
+ICMP6, router advertisement, length 56
+hop limit 64, Flags [other stateful], pref medium, router lifetime 1800s
+source link-address: 00:12:e2:70:52:50
+prefix info: [REDACTED_PUBLIC_PREFIX]/64, Flags [onlink, auto]
+valid time 2592000s, preferred time 604800s
+```
+
+The retained October 1 capture was re-read, not treated as today's exchange:
+
+```text
+02:34:15.441169 upstream RA: public /64, [onlink, auto], router lifetime 1800s
+02:34:16.267686 SOLICIT xid=b08e5: IA_NA and IA_PD, automatic prefix request
+02:34:16.273791 ADVERTISE xid=b08e5: status-code NoPrefixAvail
+02:34:17.432408 INFORMATION-REQUEST xid=1ca212
+02:34:17.447247 REPLY xid=1ca212: DNS/search/SNTP, no delegated prefix
+```
+
+Source was the same upstream link-local gateway as today's capture.
+The complete old capture remains /tmp/direct-onu-dhcpv6.pcap, SHA-256
+`10aaba3090a67dc62a896ba523c4295522f8b89aca381c1d366b1fd88d58d793`.
+The packet decode prints bad outbound UDP checksums for some transmit
+packets, but the matching inbound ADVERTISE has a valid checksum and
+transaction ID; no checksum-related failure was inferred.
+
+#### Provider interpretation and verdict
+
+[Yamaha's OCN Virtual Connect configuration guide](https://www.rtpro.yamaha.co.jp/UTM/docs/utx/ocn_mape/index.html)
+sections 2-4-1 and 2-5-1 document that FLET'S Hikari Next without Hikari Denwa
+uses router advertisements and that No Prefix Available indicates an
+RA environment without DHCPv6-PD. Section 2-4-2 distinguishes Hikari Cross,
+which can use DHCPv6-PD even without Hikari Denwa. Lack of a phone subscription
+alone is therefore not universal proof of no PD.
+
+The exact retail line contract was not inspected. However, today's observed
+RA /64, the current automatic PD request with no lease, the older explicit
+NoPrefixAvail, and the user's no-Hikari-Denwa answer all fit RA provisioning
+rather than a disabled prefix request or a current DNS/WAN failure.
+The historical upstream rejection is directly observed; a fresh rejection
+was not obtained because the separate client could not register alongside
+the live client. No disruptive restart was attempted.
+
+Conclusion: OpenWrt is requesting delegation, but this observed upstream
+connection provides an on-link SLAAC /64 and no delegated public prefix.
+The LAN's normal DHCPv6/RA server setup has only ULA space to distribute.
+This is a mismatch between ordinary downstream prefix-server configuration
+and an RA-only uplink, not evidence of a failed upstream IPv6 Internet
+connection. Changing only reqprefix or forcing RA default advertisement
+does not establish a routed public prefix.
+
+Possible follow-up (not executed): assess RA/DHCPv6 relay and NDP proxy
+through both OpenWrt and router-mode BUFFALO, preserving IPv4/MAP-E and the
+independent management path. Prefix sharing across two downstream routing
+boundaries must be designed and tested; no LAN/WAN bridge, NAT66, guessed
+public prefix, or cable change was applied. This investigation does not
+establish the cause of the earlier transient phone outage.
+
+Post-diagnostic checks: existing WAN6 client PID unchanged; ping4 3/3 replies,
+0% loss, exit 0; router-originated IPv6 HTTPS=200, curl exit 0; uci changes
+empty; SSH exit closed normally, exit 0.
+
+#### Saved artifacts and local validation
+
+Copied current capture/client/capture logs with:
+
+```powershell
+rtk proxy cmd.exe /c "scp -O -i .local-ssh/id_ed25519_v2 -o BatchMode=yes -o ConnectTimeout=10 root@192.168.1.1:/tmp/pd-probe-20261013.pcap root@192.168.1.1:/tmp/pd-probe-20261013.capture.log root@192.168.1.1:/tmp/pd-probe-20261013.client.log backups/2026-10-13-prefix-delegation/"
+rtk proxy powershell -NoProfile -Command "Get-FileHash -Algorithm SHA256 'backups/2026-10-13-prefix-delegation/*'"
+```
+
+Both exited 0; copied artifact hashes matched router-side sha256sum.
+All artifacts are ignored local files. PCAP contains the actual public
+prefix; public identifiers are redacted in this tracked report and captured
+text transcript.
+
+| File under backups/2026-10-13-prefix-delegation/ | SHA-256 |
+|---|---|
+| captured-transcript.txt | c89cd5b653bb1120a44a8969fd38c21c952f94f27a10705b961f5cc2ee8e0a83 |
+| pd-probe-20261013.pcap | 1bba7618603a6be10f1152a98a1579a2896ae25acc6f24d4c3ce3e94eea1d061 |
+| pd-probe-20261013.capture.log | ba491121a6d7f293234305ef3af768e739cf4bba4dfd2ba4818d5636cb25d2dc |
+| pd-probe-20261013.client.log | 38aa9709e0f36f49e3a2afa7b0a0adb536af0c34037ea855ec6cc7d37116fd84 |
+
+Local validation: `rtk git diff --check` passed, exit 0; only the repository's
+LF-to-CRLF warnings were emitted.
+No tested configuration correction changed the rebuild procedure.
+
+### 2026-10-14 JST - Inspect IPv6 relay readiness and propose settings (read-only)
+
+Topology: direct-ONU OpenWrt eth0; OpenWrt br-lan/eth1 to BUFFALO WAN
+192.168.1.2, BUFFALO LAN 192.168.11.1/24. No cable changes. The user supplied
+WSR-6000AX8 firmware 1.15 screenshots: IPv4 DHCP WAN 192.168.1.2,
+gateway 192.168.1.1, DNS 8.8.8.8/8.8.4.4 manually set plus 192.168.1.1;
+IPv6 automatic Internet@Start, bridge permission unchecked, only fd57 ULA,
+IPv6 gateway shown as ::/64. These are supplied screenshot observations,
+not an authenticated read of BUFFALO configuration by this agent.
+
+The user requested investigation and recommended changes. No router setting
+was changed. Existing history edits were preserved. A proposed trial,
+exact candidate UCI settings, acceptance checks and rollback requirements
+are in [the untested IPv6 relay plan](../plans/ipv6-relay.md).
+No backup or rollback was executed because this turn was read-only.
+
+One persistent SSH session used:
+`rtk proxy cmd.exe /c "ssh -tt -i .local-ssh/id_ed25519_v2 -o BatchMode=yes -o ConnectTimeout=10 root@192.168.1.1"`,
+with authorized read-only network escalation. Router commands in order:
+
+```sh
+date -Iseconds; uptime; uci show network.wan6; uci show network.lan; uci show dhcp.lan; uci -q show dhcp.wan6; uci -q show dhcp.wan; uci changes
+uci show firewall | grep -E 'zone|forwarding|icmp|ICMP|dhcpv6|DHCPv6|masq6|mtu_fix|network='; echo rc=$?
+ubus call network.interface.wan6 status | jsonfilter -e @.up -e @.uptime -e '@["ipv6-address"]' -e '@["ipv6-prefix"]'; ubus call network.interface.mape_auto status | jsonfilter -e @.up -e @.uptime; ip -6 route; echo rc=$?
+grep -n -E 'ra|dhcpv6|ndp|master|upstream|ignore' /etc/config/dhcp; apk info -v odhcpd odhcp6c; echo rc=$?
+nft list chain inet fw4 input_wan; nft list chain inet fw4 forward_wan; echo rc=$?
+apk info -e odhcpd-ipv6only; echo ipv6only_rc=$?; apk info -e odhcpd; echo odhcpd_rc=$?; ubus -v list dhcp | head -n 20; echo rc=$?
+uci show firewall.@rule[3]; uci show firewall.@rule[5]; uci show firewall.@rule[6]; sysctl net.ipv6.conf.all.forwarding; echo rc=$?
+ip -4 route; ping -c 3 -W 2 192.168.1.2; echo buffalo_ping_rc=$?; ping -c 3 -W 2 1.1.1.1; echo internet_ping_rc=$?
+curl -6 -sS --max-time 15 -o /dev/null -w 'IPv6_HTTPS=%{http_code}\n' https://example.com; echo curl6_rc=$?
+uci -q show dhcp.wan6; echo wan6_section_rc=$?; uci changes; echo changes_rc=$?; date -Iseconds
+uci -q show firewall.Allow_DHCPv6_Relay; echo proposed_rule_exists_rc=$?; uci -q show dhcp.wan6; echo proposed_wan6_section_exists_rc=$?; exit
+```
+
+Observed approximately 00:09:56-00:11:14 JST:
+
+```text
+network.wan6.device='eth0'
+network.wan6.proto='dhcpv6'
+network.wan6.iface_map='1'
+network.lan.device='br-lan'
+network.lan.proto='static'
+network.lan.ipaddr='192.168.1.1/24'
+network.lan.ip6assign='60'
+dhcp.lan.dhcpv4='server'
+dhcp.lan.dhcpv6='server'
+dhcp.lan.ra='server'
+dhcp.lan.ra_slaac='1'
+dhcp.lan.ra_flags='managed-config' 'other-config'
+dhcp.wan.interface='wan'
+dhcp.wan.ignore='1'
+wan6_section_rc=1
+changes_rc=0
+proposed_rule_exists_rc=1
+proposed_wan6_section_exists_rc=1
+```
+
+No upstream dhcp.wan6 relay/master section exists. No LAN ndp relay exists.
+Current WAN6 is up, uptime 857741, has public /64 WAN address but
+ipv6-prefix=[ ]. MAP-E is up, uptime 854256. IPv4 default is map-mape_auto.
+ULA /62 route remains via BUFFALO's link-local address.
+
+Current firewall includes WAN networks wan, wan6, mape_auto; WAN input
+REJECT, forward DROP, IPv4 masq=1 and mtu_fix=1. LAN-to-WAN forwarding
+exists. IPv6 all.forwarding=1. Allow-DHCPv6 accepts UDP destination 546;
+live input_wan has no explicit UDP destination 547 allowance.
+Allow-ICMPv6-Input includes RS/RA/NS/NA and packet-too-big. Existing IPv6
+forward ICMP rules remain. The proposed relay rule accepts only IPv6
+UDP source 547 to local destination 547 from the WAN zone; it does not
+open general inbound forwarding.
+
+Package query `apk info -v odhcpd odhcp6c` printed missing cached repository
+index warnings, found odhcp6c information, and exited 1. Corrected targeted
+local package checks found odhcpd-ipv6only (exit 0); full odhcpd is absent
+(exit 1). Existing odhcpd DHCPv6/RA ubus methods were present.
+No package install/update was needed or performed.
+
+Checks: BUFFALO WAN ping 3/3, zero loss, exit 0; public IPv4 ping 3/3,
+zero loss, exit 0; router IPv6 HTTPS=200, curl exit 0. UCI changes empty.
+SSH exit closed normally, exit 0. Grouped pipeline rc values report only
+the last command's status; independent ping/curl statuses were recorded.
+The final ping reply and IPv6 HTTPS output arrived in the subsequent
+read-only command response; both successful results are recorded here.
+
+Recommendation, not applied:
+- Create DHCP service section wan6 with interface=wan6, master=1,
+  RA/DHCPv6/NDP relay and ignore=1 to suppress dnsmasq IPv4 service.
+- Change LAN RA and DHCPv6 services from server to relay, add NDP relay.
+- Add the scoped WAN DHCPv6 relay reply rule described above.
+- Select BUFFALO Internet > IPv6 > NDプロキシを使用する.
+- Retain working IPv4/MAP-E and router-mode BUFFALO with 192.168.11.0/24.
+  Do not force a guessed delegated prefix or ra_default.
+
+Primary references:
+[odhcpd README](https://github.com/openwrt/odhcpd/blob/master/README.md),
+[odhcpd config parser](https://github.com/openwrt/odhcpd/blob/master/src/config.c),
+[DHCPv6 relay implementation](https://github.com/openwrt/odhcpd/blob/master/src/dhcpv6.c),
+[BUFFALO ND proxy instructions](https://www.buffalo.jp/support/faq/detail/16428.html).
+The parser explicitly enables IPv6 services when configured despite the
+ignore flag. Upstream source was used for intended behavior, not as proof
+that the untested proposal works on the installed firmware.
+
+The two-proxy return path, relayed DNS, unsolicited IPv6 inbound protection,
+BUFFALO/phone public addresses and actual phone IPv6 HTTPS remain untested.
+These require a staged deployment and client-side validation.
+This recommendation does not establish the cause of the earlier outage.
+No tested correction changed the rebuild manual.
+
+Ignored bounded PTY transcript:
+`backups/2026-10-14-ipv6-settings/captured-transcript.txt`, SHA-256
+`146cca8b18a048642b7573be9002d5865bf41d4ac9176eee7f481773381d294b`.
+Public prefix redacted; this is not a complete router log export.
+Local `rtk git diff --check` passed, exit 0, with LF-to-CRLF warnings only.
+
+### 2026-10-14 JST - Apply OpenWrt IPv6 relay; BUFFALO change pending
+
+The user explicitly authorized updating OpenWrt first, followed by their
+manual BUFFALO change. Applied the prepared RA/DHCPv6/NDP relay and scoped
+UDP 547 rule. No BUFFALO setting, WAN protocol, MAP-E rule, network config,
+or physical cable was changed by the agent.
+
+Topology initially OpenWrt-primary with BUFFALO WAN 192.168.1.2 and the PC
+192.168.11.97 behind BUFFALO. At validation the PC's original Ethernet
+was disconnected and its second Ethernet was directly on OpenWrt as
+192.168.1.157; this was observed via ipconfig/SSH source, not an agent cable
+action. Wi-Fi had a separate 10.175.121.x connection, so client HTTPS tests
+explicitly bound their source address to the wired test path.
+
+Initial date 00:56:18 JST, no pending UCI changes, proposed section/rule
+names absent (uci query exit 1 each). WAN6 and MAP-E both up, default route
+map-mape_auto, BUFFALO IPv4 lease confirmed. BUFFALO ping 3/3 and router
+IPv4 HTTPS 200, both exit 0.
+
+#### Backup, commands, and safeguard
+
+Opened one persistent SSH session with the approved rtk/cmd.exe wrapper.
+Saved DHCP/firewall/network to **/root/ipv6-relay-20261014.ddnGFC** and copied
+all three files to ignored **backups/2026-10-14-ipv6-relay/** before mutation.
+Router/local hashes matched.
+
+Router preflight and backup commands in order:
+
+```sh
+date -Iseconds; uci changes; uci show dhcp.lan; uci -q show dhcp.wan6; echo wan6_section_rc=$?; uci -q show firewall.Allow_DHCPv6_Relay; echo rule_exists_rc=$?
+ubus call network.interface.wan6 status | jsonfilter -e @.up -e @.uptime -e '@["ipv6-prefix"]'; ubus call network.interface.mape_auto status | jsonfilter -e @.up -e @.uptime; ip -4 route; cat /tmp/dhcp.leases; command -v setsid
+echo SSH_CONNECTION=$SSH_CONNECTION; ping -c 3 -W 2 192.168.1.2; echo buffalo_rc=$?; curl -4 -sS --max-time 15 -o /dev/null -w 'IPv4_HTTPS=%{http_code}\n' https://example.com; echo ipv4_rc=$?
+relay_backup=$(mktemp -d /root/ipv6-relay-20261014.XXXXXX); echo backup_dir=$relay_backup; cp -p /etc/config/dhcp "$relay_backup/dhcp"; cp -p /etc/config/firewall "$relay_backup/firewall"; cp -p /etc/config/network "$relay_backup/network"; sha256sum "$relay_backup/dhcp" "$relay_backup/firewall" "$relay_backup/network"
+```
+
+Local Get-NetIPAddress failed with access denied (exit 1); corrected with
+rtk proxy ipconfig (exit 0). The initial SSH source was 192.168.1.2, not
+independent wired management. For the IPv6-only settings change, a detached
+300-second rollback was staged before application; by subsequent validation,
+independent wired management was observed. The plan's original independent
+management precondition was not established before the first mutation.
+
+Prepared and copied apply.sh, rollback.sh, rollback-timer.sh into the backup
+directory. The apply script checks empty pending UCI changes and byte-for-byte
+DHCP/firewall match to backup, uses set -eu and set -x, stages the exact
+settings below, runs fw4 check, commits DHCP/firewall, reloads firewall and
+restarts odhcpd. Its error trap calls rollback.sh on failure. Full script
+and log are saved locally and on the router.
+
+Rollback script reverts pending DHCP/firewall changes, copies the saved
+files, reloads firewall and restarts odhcpd, logging both service statuses.
+Timer sleeps 300 seconds and restores only if keep-settings is absent.
+setsid spawned a detached child (PID 20581); launcher PID 20580 exiting
+was not timer completion. The child and sleep were observed running.
+
+```sh
+sh -n "$relay_backup/apply.sh"; echo apply_syntax_rc=$?; sh -n "$relay_backup/rollback.sh"; echo rollback_syntax_rc=$?; sh -n "$relay_backup/rollback-timer.sh"; echo timer_syntax_rc=$?; sha256sum "$relay_backup/"*.sh
+setsid sh "$relay_backup/rollback-timer.sh" "$relay_backup" </dev/null >"$relay_backup/timer.log" 2>&1 & relay_timer_pid=$!; echo rollback_timer_pid=$relay_timer_pid; echo "$relay_timer_pid" >"$relay_backup/timer.pid"
+sh "$relay_backup/apply.sh" "$relay_backup" >"$relay_backup/apply.log" 2>&1; relay_apply_rc=$?; echo apply_rc=$relay_apply_rc; tail -n 8 "$relay_backup/apply.log"
+```
+
+All three sh -n checks returned 0; script hashes matched local files.
+apply_rc=0. fw4 check passed, then commits/reload/restart all completed
+under set -e. Existing generated MAP ICMP port warnings recurred; they did
+not prevent the ruleset check. Existing custom MAP ICMP SNAT was preserved.
+
+Committed changes (only these differences were present in local Git
+no-index comparisons):
+
+```diff
+-dhcp.lan.ra='server'
+-dhcp.lan.dhcpv6='server'
++dhcp.lan.ra='relay'
++dhcp.lan.dhcpv6='relay'
++dhcp.lan.ndp='relay'
++dhcp.wan6=dhcp
++dhcp.wan6.interface='wan6'
++dhcp.wan6.ignore='1'
++dhcp.wan6.master='1'
++dhcp.wan6.ra='relay'
++dhcp.wan6.dhcpv6='relay'
++dhcp.wan6.ndp='relay'
++firewall.Allow_DHCPv6_Relay=rule
++firewall.Allow_DHCPv6_Relay.name='Allow-DHCPv6-Relay'
++firewall.Allow_DHCPv6_Relay.src='wan'
++firewall.Allow_DHCPv6_Relay.proto='udp'
++firewall.Allow_DHCPv6_Relay.src_port='547'
++firewall.Allow_DHCPv6_Relay.dest_port='547'
++firewall.Allow_DHCPv6_Relay.family='ipv6'
++firewall.Allow_DHCPv6_Relay.target='ACCEPT'
+```
+
+#### Verification, failures, and corrections
+
+The original SSH session reset before the first post-change query could
+complete. Reconnected once because that session ended. A first PC IPv4 curl
+bound to the previous 192.168.11.97 address failed (curl 7, HTTP 000,
+tool exit 1). Subsequent ipconfig showed that address/interface was no
+longer connected; it was replaced by wired 192.168.1.157 on OpenWrt LAN.
+Do not treat the obsolete-source test as a proven forwarding regression.
+
+Post-change router commands:
+
+```sh
+relay_backup=/root/ipv6-relay-20261014.ddnGFC; date -Iseconds; ps ww | grep -E '[r]ollback-timer|[s]leep 300|[o]dhcpd'; uci show dhcp.wan6; uci changes
+ubus call network.interface.wan6 status | jsonfilter -e @.up -e @.uptime; ubus call network.interface.mape_auto status | jsonfilter -e @.up -e @.uptime; ip -4 route; nft list chain inet fw4 input_wan | grep -E '547|546'; echo rc=$?
+ping -c 3 -W 2 1.1.1.1; echo ping4_rc=$?; curl -4 -sS --max-time 10 -o /dev/null -w 'IPv4_HTTPS=%{http_code}\n' https://example.com; echo curl4_rc=$?; curl -6 -sS --max-time 10 -o /dev/null -w 'IPv6_HTTPS=%{http_code}\n' https://example.com; echo curl6_rc=$?
+uci show dhcp.lan; sha256sum /etc/config/network; ubus call service list '{"name":"odhcpd"}' | head -n 22; logread | tail -n 12
+touch "$relay_backup/keep-settings"; echo keep_rc=$?; test -f "$relay_backup/keep-settings"; echo timer_disarmed_rc=$?; test -f "$relay_backup/rollback.log"; echo rollback_log_exists_rc=$?; date -Iseconds
+```
+
+Observed at 01:02:14: odhcpd running PID 20685, WAN6 up uptime 860874,
+MAP-E up uptime 857389. The default remained map-mape_auto.
+Live input_wan had both the original UDP 546 allowance and the new
+UDP source/destination 547 relay allowance. Public IPv4 ping 3/3, zero loss,
+exit 0; router IPv4 HTTPS 200 and IPv6 HTTPS 200, curl exits 0.
+Network SHA-256 unchanged. uci changes empty.
+
+At 01:02:46 keep marker creation and existence checks both returned 0.
+Rollback log existence returned 1 (absent); no rollback occurred. The
+detached timer subsequently exited. The update remains applied.
+
+New PC ipconfig: wired IPv4 192.168.1.157, public SLAAC IPv6 addresses in the
+upstream /64, IPv6 gateway OpenWrt eth1 link-local, IPv4 gateway 192.168.1.1.
+Final client checks used the corrected wired sources:
+
+```text
+rtk proxy cmd.exe /c "curl.exe --ipv4 --interface 192.168.1.157 --silent --show-error --max-time 15 --output NUL --write-out IPv4_HTTPS=%{http_code} https://example.com"
+IPv4_HTTPS=200; exit 0
+
+rtk proxy cmd.exe /c "curl.exe --ipv6 --interface <OBSERVED_WIRED_PUBLIC_IPV6> --silent --show-error --max-time 15 --output NUL --write-out IPv6_HTTPS=%{http_code} https://example.com"
+IPv6_HTTPS=200; exit 0
+```
+
+The IPv6 address argument was the actual public address observed by ipconfig,
+redacted here. Source binding excludes the PC's separate Wi-Fi IPv4 path.
+
+Additional router commands:
+
+```sh
+tcpdump -ni br-lan -s 0 -U -c 8 -w "$relay_backup/lan-ra.pcap" 'icmp6 and ip6[40] == 134' >"$relay_backup/lan-ra-capture.log" 2>&1 & relay_capture_pid=$!; echo capture_pid=$relay_capture_pid
+(sleep 60; kill -INT "$relay_capture_pid" 2>/dev/null) & echo capture_timer_pid=$!
+diff -u "$relay_backup/dhcp" /etc/config/dhcp; diff -u "$relay_backup/firewall" /etc/config/firewall; cmp -s "$relay_backup/network" /etc/config/network; echo network_unchanged_rc=$?; uci changes; nslookup example.com 127.0.0.1; echo dns_rc=$?
+cat "$relay_backup/lan-ra-capture.log"; tcpdump -nn -vvv -r "$relay_backup/lan-ra.pcap" 2>/dev/null | head -n 16; ps ww | grep '[r]ollback-timer'; test -f "$relay_backup/keep-settings"; echo keep_marker_rc=$?; date -Iseconds
+wait "$relay_capture_pid"; echo capture_exit=$?; cat "$relay_backup/lan-ra-capture.log"; uci changes; test -f "$relay_backup/rollback.log"; echo rollback_log_exists_rc=$?; sha256sum "$relay_backup/lan-ra.pcap" "$relay_backup/lan-ra-capture.log" "$relay_backup/apply.log"
+exit
+```
+
+Router diff is unavailable; both attempts failed before comparison.
+cmp network returned 0; nslookup returned A/AAAA and dns_rc=0.
+Copied before/after DHCP/firewall files for local comparisons.
+rtk git diff --no-index was rejected by shim parameter binding; corrected
+with rtk proxy cmd.exe /c "git diff --no-index -- ...". Both corrected Git
+diffs exited 1 as expected for differing files and showed only the intended
+changes listed above.
+
+LAN RA capture completed exit 0: 1 packet captured/received, zero dropped.
+Relevant verbatim decode at 01:03:09.988547, public prefix redacted:
+
+```text
+OpenWrt eth1 link-local > ff02::1: ICMP6, router advertisement, length 56
+hop limit 64, Flags [other stateful], pref medium, router lifetime 1800s
+prefix info option: [PUBLIC_UPSTREAM_PREFIX]/64, Flags [auto]
+valid time 2592000s, preferred time 604800s
+```
+
+The relayed public prefix is SLAAC-enabled and deliberately not marked
+on-link in this LAN advertisement. Direct-LAN source-bound IPv6 HTTPS
+passed, proving a usable client data path, beyond merely seeing the RA.
+
+SSH exit 0. No manual or automatic rollback executed. Verified manual
+rollback command is available but unrun:
+
+```sh
+sh /root/ipv6-relay-20261014.ddnGFC/rollback.sh /root/ipv6-relay-20261014.ddnGFC
+```
+
+#### Artifacts and handoff
+
+All files below are under ignored backups/2026-10-14-ipv6-relay/.
+Router copies remain under /root/ipv6-relay-20261014.ddnGFC.
+SCP copies exited 0. Configuration hashes, full apply log, and completed
+LAN capture hashes were checked against router-side values.
+
+| Artifact | SHA-256 |
+|---|---|
+| dhcp | d010aabf0e6fc05235c4dfda0b325a511fa2c6528729d239fc81f8c8b1ac9bef |
+| firewall | 7913b92a9b96df14d2e9dc8394292c3bc56e24ed7d5e715a2ef6b8a0f9d2fda4 |
+| network | 1e0c63ba79568b9a7db91e9d3ba4d8df1598ff880c413e21ec66117f4b39e847 |
+| dhcp-after | 4b79c410362bbae08813112a9b4547b98e6c6400525e73a966545843ceeb6b30 |
+| firewall-after | c453154a646539461bf0048a7dc4c037cd10067c1cf79244759957d5b327f60e |
+| apply.sh | cda7dd749183571a968cd47f4306089d2d4ad1a5c507079e8e9f762d133e409f |
+| rollback.sh | 6dfd3ef2a177670c886ec0a922b69cf316ee2cf333159f7d8fe26855db645f3a |
+| rollback-timer.sh | b7a9a84e1a3348f9812f577eace487aa3d746f5d3461abf1c4cce55e981e38e4 |
+| apply.log | 3ea1a57c72a813b2ab7b9fe709e9c44e6da370cd491fab6c19c6806b205ec586 |
+| lan-ra.pcap | 3f540d7e0278ae703c8d252981f7778125bd2a975249d32327fdb7add6ba114f |
+| lan-ra-capture.log | ffc006fbf1162750f23fd2aed7b6ff35d02eaa208f5dcc12fb3336a10a8b603a |
+
+Verdict: OpenWrt stage PASS for committed relay settings, firewall check,
+service operation, router DNS/IPv4/IPv6, public LAN RA, and wired-client
+IPv4/IPv6 HTTPS. BUFFALO ND proxy setting is pending user action.
+DHCPv6 relay response/DNS behavior through BUFFALO, phone public IPv6,
+phone IPv6 HTTPS, unsolicited inbound IPv6 rejection, and reboot persistence
+remain untested. The earlier phone outage cause remains unresolved.
+Plan status updated to OpenWrt applied / downstream acceptance pending;
+the complete two-router procedure is not marked verified.
+
+Local documentation validation: `rtk git diff --check` passed, exit 0;
+LF-to-CRLF warnings only.
+
+### 2026-10-14 JST - BUFFALO automatic ND proxy and phone IPv6 failure follow-up (read-only)
+
+Supplied screenshots after the OpenWrt relay update:
+- BUFFALO remained in Internet@Start automatic mode and reported ND proxy,
+  a public /64 address and OpenWrt eth1 link-local IPv6 gateway. The user
+  said they had not manually changed the BUFFALO IPv6 setting.
+- Phone IPv4 192.168.11.25, IPv4 gateway/DNS 192.168.11.1, public IPv6
+  addresses in the upstream /64, gateway reported N/A by the phone app,
+  IPv6 DNS equal to OpenWrt's eth1 link-local address.
+- Phone test-ipv6.com screenshot reports no IPv6 detected, score 0/10,
+  working OCN IPv4. Its DNS-server IPv6 check passed; that test concerns
+  the resolver's connectivity, not proof of phone IPv6 data connectivity.
+Cellular/VPN-disabled state during that screenshot was not independently
+confirmed. The phone/browser failure remains an observed user test result.
+
+No router configuration was changed this turn. Current OpenWrt relay
+configuration matched the applied settings, uci changes empty.
+Actual test topology: PC wired to BUFFALO LAN as 192.168.11.97,
+default IPv4 gateway 192.168.11.1, public IPv6 address and IPv6 default route
+via BUFFALO link-local. Wi-Fi/VPN adapters were disconnected in ipconfig.
+One persistent read-only SSH session used the usual rtk/cmd wrapper.
+
+Read-only commands and bounded captures:
+
+```sh
+date -Iseconds; uci show dhcp.wan6; uci show dhcp.lan; uci changes; ip -6 route; ip -6 neigh; echo rc=$?
+pd_diag=$(mktemp -d /root/ipv6-buffalo-20261014.XXXXXX); echo diagnostic_dir=$pd_diag; tcpdump -ni br-lan -s 160 -U -c 100 -w "$pd_diag/lan.pcap" 'icmp6 or host 2400:4050:c340:1600:5de7:7be7:d472:3843' >"$pd_diag/lan.log" 2>&1 & pd_lan_pid=$!
+tcpdump -ni eth0 -s 160 -U -c 100 -w "$pd_diag/wan.pcap" 'icmp6 or host 2400:4050:c340:1600:5de7:7be7:d472:3843' >"$pd_diag/wan.log" 2>&1 & pd_wan_pid=$!; (sleep 35; kill -INT "$pd_lan_pid" "$pd_wan_pid" 2>/dev/null) & echo bounded_capture_timer=$!
+ping -6 -c 3 -W 2 2400:4050:c340:1600:44aa:1cff:fe67:f615; echo phone_stable_ping_rc=$?; ping -6 -c 3 -W 2 2400:4050:c340:1600:6519:2f8a:d367:dae8; echo phone_temporary_ping_rc=$?
+ip -6 route | grep -E '44aa|6519|5de7'; ip -6 neigh | grep -E '44aa|6519|5de7'; echo rc=$?
+wait "$pd_lan_pid"; echo lan_capture_exit=$?; wait "$pd_wan_pid"; echo wan_capture_exit=$?; cat "$pd_diag/lan.log" "$pd_diag/wan.log"
+tcpdump -nn -r "$pd_diag/lan.pcap" 'host 2400:4050:c340:1600:5de7:7be7:d472:3843' 2>/dev/null | head -n 8; tcpdump -nn -r "$pd_diag/wan.pcap" 'host 2400:4050:c340:1600:5de7:7be7:d472:3843' 2>/dev/null | head -n 8; sha256sum "$pd_diag/"*.pcap; uci changes
+tcpdump -nn -r "$pd_diag/lan.pcap" 'icmp6' 2>/dev/null | grep -E '44aa|6519|5de7' | head -n 12; ip -6 route | grep -E '44aa|6519|5de7'; uci changes; date -Iseconds
+```
+
+Client commands (public IPv6 source redacted here):
+
+```text
+rtk proxy ipconfig
+exit 0; wired 192.168.11.97, public IPv6, BUFFALO gateways.
+
+rtk proxy cmd.exe /c "netsh interface ipv6 show route"
+exit 0; ::/0 on interface 11 via fe80::6ae1:dcff:fe37:1d10.
+
+rtk proxy cmd.exe /c "curl.exe --ipv6 --interface <OBSERVED_PUBLIC_PC_IPV6> --silent --show-error --connect-timeout 8 --max-time 12 --output NUL --write-out IPv6_HTTPS=%{http_code} https://example.com"
+IPv6_HTTPS=200, exit 0.
+
+rtk proxy cmd.exe /c "curl.exe --ipv4 --interface 192.168.11.97 --silent --show-error --max-time 12 --output NUL --write-out IPv4_HTTPS=%{http_code} https://example.com"
+IPv4_HTTPS=200, exit 0.
+```
+
+Both curl commands ran during a 35-second capture on br-lan and eth0.
+Snapshots used snaplen 160 and limit 100 packets, including ICMPv6 and the
+specified PC address. Final captures: LAN 45 packets, WAN 36 packets,
+zero dropped by kernel. Background jobs completed; later wait attempts
+returned 127 because the exited jobs were no longer waitable. This is
+not their original exit code; the capture logs contain the completed counts.
+
+Relevant decoded evidence at 01:16:40-01:16:42 JST, public addresses redacted:
+
+```text
+LAN: PC_PUBLIC:52379 > SERVER_V6:443 TCP SYN
+LAN: OpenWrt link-local > multicast: NS who has PC_PUBLIC
+LAN: BUFFALO link-local > OpenWrt link-local: NA target PC_PUBLIC
+LAN: OpenWrt link-local > PC_PUBLIC: echo request
+LAN: PC_PUBLIC > OpenWrt link-local: echo reply
+WAN: PC_PUBLIC:52379 > SERVER_V6:443 TCP SYN
+WAN: SERVER_V6:443 > PC_PUBLIC:52379 TCP SYN-ACK
+WAN: PC_PUBLIC:52379 > SERVER_V6:443 TCP ACK
+```
+
+The PC's /128 route was learned on br-lan, with neighbor MAC
+68:e1:dc:37:1d:10 (BUFFALO). Source-bound HTTPS success establishes a
+working IPv6 data path from a client behind BUFFALO, not only from OpenWrt.
+It does not establish the same result for the phone.
+
+Pings to both phone IPv6 addresses supplied in the screenshot returned
+0/3, exit 1 each. No corresponding br-lan host route was observed; their
+neighbors were incomplete/failed on eth0. This is consistent with no
+currently learned downstream path for those addresses, but does not prove
+a missing phone route, stale screenshot, ICMP blocking, or specific cause.
+The phone may not have been actively sending IPv6 during the capture.
+No static routes or neighbor entries were added to mask the issue.
+
+At 01:18:54, PC host route remained on br-lan and uci changes was empty.
+Requested a phone Wi-Fi reconnect and repeat test with VPN/cellular
+disabled, plus comparison with another browser. Results are pending.
+The link-local DNS advertisement across the second router remains a
+candidate issue to check; the working PC path and IPv4 DNS availability
+do not prove the phone's resolver selection is healthy.
+
+Documentation correction: the relay plan now says to retain BUFFALO
+automatic mode when it selects ND proxy, rather than requiring a manual
+selection. It records BUFFALO-LAN PC success and unresolved phone failure.
+Do not mark the phone or full rollout acceptance complete.
+
+Ignored local artifacts, copied by authorized read-only SCP from
+/root/ipv6-buffalo-20261014.KoBbeK to
+backups/2026-10-14-buffalo-ipv6/ (SCP exit 0):
+
+| Artifact | SHA-256 |
+|---|---|
+| captured-transcript.txt | 4a4f748392693a4137c88937b8f53e3a2c2c15a2dbc5dfc543ff10611efeaadd |
+| lan.pcap | 7c6ab19bdac324731b0a70774f200a0d3d2b9273dde4ba161b568c963646841c |
+| wan.pcap | 2017890b2d889af5dcf5a314ff58f17c68d622418fd8dba4c308e231702eefc8 |
+| lan.log | de713cc919a59225c70c1a3f59621d702b0b205a1b89acf169020b1d011596db |
+| wan.log | 3c38d744f9b166a3b2a716e48b91eeafc7bd542eca16bfce6e00c6eabe438015 |
+
+PCAP hashes match the router-side values. Text transcript public prefix
+redacted; PCAPs contain original addresses and remain ignored.
+A combined memory regex query failed at the rtk wrapper pipe parsing
+before reading memory; no memory-derived diagnosis was used this turn.
+No rollback, firewall reload, odhcpd restart, cable move or router setting
+change was performed. Local `rtk git diff --check` passed, exit 0;
+LF-to-CRLF warnings only. SSH remains available for the pending phone retest.
+
+### 2026-10-14 JST - Android retest remains IPv4-only; DNS checks (read-only)
+
+The user confirmed that Wi-Fi reconnect with VPN/cellular disabled still
+gave 0/10 in both browsers, and identified the phone as Android.
+They referred to current IP status and Tests Run screenshots, but those
+images had not arrived when this record was written. Do not infer the
+current phone address or individual failed test details from that text.
+
+Reused the existing persistent SSH session; no network/service/router
+configuration changed. At 01:23:04 JST, WAN6 up, uptime 862122,
+uci changes empty. Neither previously supplied phone public address had a
+learned br-lan /128 route; both eth0 neighbor entries were FAILED.
+Those addresses may no longer be current after reconnecting.
+
+Local ipconfig still showed PC wired to BUFFALO LAN, public IPv6 and
+BUFFALO IPv4/IPv6 gateways. Its configured IPv6 DNS server was the same
+OpenWrt eth1 link-local address reported by the phone app.
+Read-only commands:
+
+```text
+rtk proxy ipconfig
+exit 0; PC remains on 192.168.11.97 behind BUFFALO.
+
+rtk proxy cmd.exe /c "netsh interface ipv6 show dnsservers"
+exit 0; wired interface IPv6 DNS = fe80::82ee:73ff:feab:4af1%11.
+
+rtk proxy cmd.exe /c "nslookup -timeout=2 -retry=1 -type=AAAA example.com fe80::82ee:73ff:feab:4af1%11"
+exit 0; example.com AAAA answers 2606:4700:10::ac42:93f3 and 2606:4700:10::6814:179a.
+
+rtk proxy cmd.exe /c "nslookup -timeout=2 -retry=1 -type=AAAA example.com fd57:3a20:c1d6::1"
+exit 0; same AAAA answers.
+
+rtk proxy cmd.exe /c "nslookup -timeout=2 -retry=1 -type=AAAA example.com 192.168.11.1"
+exit 0; same AAAA answers.
+```
+
+These tests show the advertised link-local DNS endpoint is reachable from
+this BUFFALO client through the proxy arrangement. The endpoint's address
+scope alone therefore does not prove phone DNS failure. This is evidence
+for the wired PC, not for Android's resolver selection or Wi-Fi path.
+The earlier statement that link-local DNS could not be reached across
+BUFFALO was too strong for a proxy configuration; direct routing
+restrictions alone do not establish the observed behavior here.
+
+Optional local capture-tool discovery: where tshark.exe returned not found,
+exit 1; pktmon status returned access denied, exit 1. No local packet
+capture was started and no driver/service setting was changed.
+No escalation or install was needed for the completed DNS checks.
+
+Router follow-up:
+`uci show dhcp.lan; ubus call network.interface.wan6 status | jsonfilter -e '@["dns-server"]'; echo rc=$?`
+returned current relay settings and upstream DNS
+2404:1a8:7f01:b::3 / 2404:1a8:7f01:a::3, rc 0.
+
+Verdict: IPv6 path and DNS from the wired BUFFALO client work, but Android
+still reports IPv4-only in both browsers. Phone's current addresses,
+default route and detailed test failures remain needed before choosing a
+further router change. No automatic/manual rollback or setting change
+performed; SSH retained for continuation. Local `rtk git diff --check`
+passed, exit 0, with LF-to-CRLF warnings only.
+
+### 2026-10-14 JST - Current Android screenshots and IPv6-only page test (read-only)
+
+The newly received screenshots show Android Wi-Fi IPv4 192.168.11.10,
+gateway/DNS 192.168.11.1, two public IPv6 addresses in the upstream /64
+with suffixes 371c:c3ed:851f:9e8e and c426:9cd5:c745:c5b4,
+link-local suffix f7c7:aebb:df83:9f55, IPv6 gateway shown N/A,
+IPv6 DNS OpenWrt eth1 link-local. External IPv6 is shown N/A.
+Previous phone suffixes 44aa/6519 are stale and must not be used for new
+correlated testing.
+
+Tests Run screenshot: IPv4 and dual-stack tests pass using IPv4; IPv6 DNS
+record, IPv6 large packet, and IPv6 provider lookup fail. The resolver's
+IPv6 test passes using IPv4. This does not identify whether DNS, Android's
+route, BUFFALO Wi-Fi forwarding, or neighbor discovery is responsible.
+Phone confirmed on main Wi-Fi, not a guest SSID.
+
+Reused SSH session. Created /root/ipv6-android-20261014.CNjiPm and performed
+bounded captures; no router configuration changes or service restarts.
+
+First capture commands:
+
+```sh
+phone_diag=$(mktemp -d /root/ipv6-android-20261014.XXXXXX); echo diagnostic_dir=$phone_diag; date -Iseconds; ip -6 route | grep -E '371c|c426'; ip -6 neigh | grep -E '371c|c426|f7c7'
+tcpdump -ni br-lan -s 160 -U -c 150 -w "$phone_diag/lan.pcap" 'icmp6 or host 2400:4050:c340:1600:371c:c3ed:851f:9e8e or host 2400:4050:c340:1600:c426:9cd5:c745:c5b4' >"$phone_diag/lan.log" 2>&1 & phone_lan_pid=$!
+tcpdump -ni eth0 -s 160 -U -c 150 -w "$phone_diag/wan.pcap" 'icmp6 or host 2400:4050:c340:1600:371c:c3ed:851f:9e8e or host 2400:4050:c340:1600:c426:9cd5:c745:c5b4' >"$phone_diag/wan.log" 2>&1 & phone_wan_pid=$!; (sleep 60; kill -INT "$phone_lan_pid" "$phone_wan_pid" 2>/dev/null) & echo capture_timer=$!
+ping -6 -I br-lan -c 3 -W 2 2400:4050:c340:1600:371c:c3ed:851f:9e8e; echo phone_lan_ping_rc=$?; ping -6 -I br-lan -c 3 -W 2 2400:4050:c340:1600:c426:9cd5:c745:c5b4; echo phone_temp_lan_ping_rc=$?
+ip -6 route | grep -E '371c|c426'; ip -6 neigh | grep -E '371c|c426'; echo rc=$?
+tcpdump -nn -r "$phone_diag/lan.pcap" 2>/dev/null | grep -E '371c|c426|router advertisement' | head -n 18; tcpdump -nn -r "$phone_diag/wan.pcap" 2>/dev/null | grep -E '371c|c426' | head -n 12
+tcpdump -nn -r "$phone_diag/lan.pcap" 'host 2400:4050:c340:1600:371c:c3ed:851f:9e8e or host 2400:4050:c340:1600:c426:9cd5:c745:c5b4' 2>/dev/null | wc -l; tcpdump -nn -r "$phone_diag/wan.pcap" 'host 2400:4050:c340:1600:371c:c3ed:851f:9e8e or host 2400:4050:c340:1600:c426:9cd5:c745:c5b4' 2>/dev/null | wc -l
+sha256sum "$phone_diag/"*.pcap; ip -6 route | grep -E '371c|c426'; uci changes; date -Iseconds
+```
+
+The first 60-second capture yielded LAN 102 packets and WAN 23 packets;
+received-by-filter 127/25, kernel drops 0/0. No packets whose IPv6 source
+or destination was either current phone address were found in either
+capture (both decoded line counts 0). ICMPv6 from other clients was captured.
+The user's fresh reload reply arrived after this capture ended, so this
+absence is not treated as a capture of that reload.
+
+Forced-interface router pings immediately failed with Network unreachable,
+exit 1. No downstream /128 route existed for these addresses, so forcing
+br-lan could not select a usable route; this failure is not a phone reachability
+test and did not exercise the desired NS/NA exchange. No temporary route
+was added.
+
+Started a second five-minute, phone-address-only capture (snaplen 128,
+limit 2500) on br-lan and eth0 at 01:29:46 JST:
+
+```sh
+tcpdump -ni br-lan -s 128 -U -c 2500 -w "$phone_diag/phone-live-lan.pcap" 'host 2400:4050:c340:1600:371c:c3ed:851f:9e8e or host 2400:4050:c340:1600:c426:9cd5:c745:c5b4' >"$phone_diag/phone-live-lan.log" 2>&1 & phone_live_lan=$!
+tcpdump -ni eth0 -s 128 -U -c 2500 -w "$phone_diag/phone-live-wan.pcap" 'host 2400:4050:c340:1600:371c:c3ed:851f:9e8e or host 2400:4050:c340:1600:c426:9cd5:c745:c5b4' >"$phone_diag/phone-live-wan.log" 2>&1 & phone_live_wan=$!
+(sleep 300; kill -INT "$phone_live_lan" "$phone_live_wan" 2>/dev/null) & echo capture_timer=$!; date -Iseconds
+```
+
+User initially opened ipv6test.google.com and saw No problems detected.
+[Google's page](https://ipv6test.google.com/) pairs that result with no IPv6
+but working access to dual-stack sites; it is not an IPv6 success result.
+The user then opened exactly https://ipv6.google.com/ and confirmed failure.
+This occurred during the second capture window. Reads at 01:31:04,
+01:32:41 and 01:33:33 showed no decoded packets from either current phone
+address. No br-lan /128 phone route was observed. This narrows the location
+to before the OpenWrt LAN capture point for these addresses, but does not
+prove the phone had no default route or locate the precise failure.
+
+Comparison tests from the wired BUFFALO client:
+
+```text
+nslookup -timeout=2 -retry=1 -type=A ipv6.google.com 192.168.11.1
+No A address returned; exit 0.
+
+nslookup -timeout=2 -retry=1 -type=AAAA ipv6.google.com 192.168.11.1
+AAAA addresses returned; exit 0.
+
+curl.exe --ipv6 --interface <PUBLIC_WIRED_PC_IPV6> --silent --show-error --max-time 12 --output NUL --write-out Google_IPv6_HTTPS=%{http_code} https://ipv6.google.com/
+Google_IPv6_HTTPS=200; exit 0.
+
+ping.exe -6 -S <PUBLIC_WIRED_PC_IPV6> -n 3 -w 1500 2606:4700:4700::1111
+3/3 replies, zero loss, 4 ms; exit 0.
+```
+
+All local commands used rtk proxy cmd.exe /c; network tests were approved
+read-only diagnostics. Asked the user to run a numeric IPv6 ping from the
+phone to distinguish name resolution from routing. Its result is pending
+at this point. Phone's app supplies the Ping tool documented by
+[Network Analyzer Android help](https://techet.net/netanalyzer/help-android);
+app identification from the screenshot is an inference, not user confirmation.
+
+Windows capture discovery: pktmon start help succeeded; pktmon status
+returned access denied even under available elevated tool execution.
+No Windows capture was started. This is a local privilege limitation, not
+an automatic approval rejection or proof of a router issue.
+
+First completed captures copied to ignored backups/2026-10-14-android-ipv6/,
+SCP exit 0, matching router hashes:
+
+| File | SHA-256 |
+|---|---|
+| captured-transcript.txt | 9a7a7f5439e8219c8e10c09fc56148a9c9f2e08159d28eed02f375cbd9ae304e |
+| lan.pcap | 19ae48dc6ef097b3e9446fae7d622bf19c2d347d765e0457e353a87b7e9b885b |
+| wan.pcap | ed323a8f0e6be52f3ffc1e3300ffcdb8e8a7e646b600f570dd7ff8ba1c2697e3 |
+| lan.log | 64089a1a0fd53bb6549aa53018bdf08dc0fcb3c68f5af8b6fa47830877e670be |
+| wan.log | 521921ee55ed2399c767ae751f9c05f1ba066e47e77a9cf201205da6a6fc81fb |
+
+Second capture completed after 300 seconds (start 01:29:46); final log read
+at 01:35:34 showed zero packets captured/received/dropped on both interfaces.
+Both header-only PCAPs have SHA-256
+`c6d5b6f39aa334ca0ef3e27b3cd8cf6a82e453275c16d5fa2f6397a63bb5506f`.
+The completed phone-live-lan/wan.pcap and corresponding .log files were
+copied into the same ignored local directory (SCP exit 0).
+The filter covered the two supplied public IPv6 addresses, not the phone's
+link-local DNS traffic. Therefore zero Internet traffic from those public
+addresses was observed; this does not prove absence of IPv6 DNS queries.
+The direct IPv6-only page failure was reported during this window.
+Numeric phone ping result remains pending and will distinguish DNS from
+the phone's route/BUFFALO forwarding path. No diagnosis of the exact cause
+or corrective router setting is established yet.
+No router mutations, rollback, restarts or cable moves performed.
+Local `rtk git diff --check` passed, exit 0, with LF-to-CRLF warnings only.

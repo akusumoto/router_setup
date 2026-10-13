@@ -228,15 +228,140 @@ uci commit network
 
 ## 7. Failure handling and rollback
 
-Use the verified Phase 2 automation; do not guess MAP-E values or add a competing static MAP interface.  If DS57U does not
-gain working direct IPv6 and IPv4, immediately restore the prior topology:
+For an IPv6-only regression while IPv4 still works, first restore the
+pre-relay OpenWrt DHCP/firewall files and BUFFALO's original IPv6 mode using
+the [IPv6 relay plan's rollback](docs/plans/ipv6-relay.md#rollback-not-run).
+If the OpenWrt path remains unusable, use the direct-ONU fallback below.
+Use the reviewed Phase 2 automation; do not guess MAP-E values or add a
+competing static MAP interface.
 
-1. Disconnect DS57U lower `eth0` from the ONU-side hub.
-2. Connect the ONU cable back to BUFFALO WAN.
-3. Connect the blue cable from a BUFFALO LAN port to DS57U lower `eth0`.
-4. Connect the white cable from DS57U upper `eth1` back to the test PC.
-5. Wait up to two minutes, then verify DS57U WAN again receives
-   `192.168.11.x` with gateway `192.168.11.1`, and test IPv4, DNS, HTTPS, and
-   SSH to `192.168.1.1` from the directly attached PC.
+### 7.1 Prepare the direct-ONU BUFFALO fallback before changing settings
+
+Keep an offline copy of this procedure and the saved router configurations
+on the test PC. Recovery must work without Internet access or this chat.
+Save BUFFALO's configuration export and screenshots of the Internet and
+IPv6 pages. Save OpenWrt's pre-relay `dhcp` and `firewall` files in a unique
+backup directory, copy them to ignored local `backups/`, and record the
+actual directory and SHA-256 hashes in the execution history.
+
+Identify cables by endpoints; cable colors alone are not reliable:
+
+| Cable | OpenWrt-primary endpoints | Direct-ONU BUFFALO fallback endpoints |
+|---|---|---|
+| ONU uplink | ONU / ONU-side hub to DS57U lower `eth0` WAN | ONU / ONU-side hub to BUFFALO WAN/Internet |
+| Downstream link | DS57U upper `eth1` LAN to BUFFALO WAN | Disconnected initially; optionally BUFFALO LAN to DS57U lower `eth0` WAN after recovery |
+| Management link | Test PC directly to DS57U upper `eth1` LAN | Test PC directly to DS57U upper `eth1` LAN |
+| Existing client links | BUFFALO LAN/Wi-Fi to clients | Same BUFFALO LAN/Wi-Fi to clients |
+
+Establish the independent wired IPv4 management link and verify SSH/LuCI at
+`192.168.1.1` before starting the relay trial. If the PC is currently wired
+only through BUFFALO, move that PC link to DS57U `eth1` or its LAN switch;
+use a separate BUFFALO Wi-Fi client to keep the admin page accessible at
+`192.168.11.1`. Keep the physical ONU powered and the fiber unchanged.
+
+### 7.2 Restore BUFFALO as the direct-ONU Internet router
+
+Target recovery topology:
+
+```text
+ONU / ONU-side hub
+  |
+BUFFALO WAN/Internet
+  |
+BUFFALO router mode, LAN 192.168.11.1/24
+  +-- existing wired clients
+  `-- existing Wi-Fi clients
+
+OpenWrt initially isolated from the Internet:
+test PC -- DS57U upper eth1 LAN, 192.168.1.1/24
+DS57U lower eth0 WAN disconnected
+```
+
+1. Open BUFFALO's admin page at `http://192.168.11.1/` from its LAN/Wi-Fi.
+   Keep it in **router mode**, with LAN `192.168.11.1/24` and DHCP enabled.
+   In **Internet > Internet**, keep/select the IP address acquisition method
+   **「インターネット＠スタートを行う」**. In **Internet > IPv6**, select
+   **「インターネット＠スタートを行う」** instead of
+   **「NDプロキシを使用する」**. Restore the saved bridge-permission checkbox
+   state (the original supplied screenshot has
+   **「IPv6ブリッジを許可する」 unchecked**), then apply with **「設定」**.
+   Wait for the admin page to become available again. Applying this while
+   BUFFALO still sits behind OpenWrt is preparation, not proof of recovery.
+2. Disconnect the link between **DS57U `eth1` LAN and BUFFALO WAN** at both
+   ends. Keep the independent test-PC-to-DS57U-management link connected.
+3. Disconnect the ONU uplink from **DS57U lower `eth0` WAN** and connect that
+   same ONU uplink to **BUFFALO WAN/Internet**. Use the WAN/Internet port,
+   not a BUFFALO LAN port. Leave DS57U WAN disconnected for initial recovery.
+4. Leave existing BUFFALO LAN and Wi-Fi clients connected. Allow about two
+   minutes for link establishment and automatic line detection, then inspect
+   **ステータス > システム**. If automatic detection has not recovered the
+   connection, reapply the automatic Internet setting with the ONU uplink
+   now connected and inspect the status/log again. Record the result; do not
+   assume the two-minute wait is a guaranteed recovery time.
+5. Reconnect the phone's Wi-Fi if needed. Confirm an IPv4 address in
+   `192.168.11.0/24` with gateway `192.168.11.1`, reach the BUFFALO admin page,
+   resolve a hostname, and open HTTPS sites. Disable cellular/VPN/other
+   routes during acceptance checks so they cannot mask a failed Wi-Fi path.
+6. Record IPv4 and IPv6 separately. For IPv6, require a public address,
+   usable default gateway, and an IPv6-only or explicitly IPv6-bound HTTPS
+   check. Private `fd...` and link-local `fe80...` addresses alone are not
+   IPv6 Internet acceptance. In direct-ONU operation, BUFFALO should detect
+   the provider connection rather than continue reporting OpenWrt's
+   `192.168.1.2` WAN lease; reacquire actual values, do not enter guessed
+   public IPv4/MAP-E settings. MAP-E status may differ from ordinary DHCP.
+
+If the admin page becomes unavailable during preparation, connect a test
+device directly to a BUFFALO LAN port, renew its DHCP lease, and use
+`192.168.11.1`. Keep the OpenWrt management cable independent. Recovery of
+BUFFALO Internet service does not require restoring or reconnecting OpenWrt.
+
+BUFFALO's documented setup/status menus are described in its
+[Internet configuration guide](https://www.buffalo.jp/support/faq/detail/124144869.html).
+The exact automatic-mode labels above come from the supplied WSR-6000AX8
+screenshots. The full fallback after an IPv6 relay trial remains untested;
+record its actual outcome when run.
+
+### 7.3 Optionally reconnect OpenWrt behind BUFFALO after Internet recovery
+
+Complete Section 7.2 first. From the independently attached PC, preserve any
+failure evidence and restore OpenWrt's saved **pre-relay** DHCP/firewall
+configuration using the actual verified backup directory. Reload firewall
+and restart odhcpd as described in the relay plan. This avoids leaving WAN6
+as a relay master while moving it under the original upstream router.
+Recheck IPv4 management access before reconnecting its WAN.
+
+Connect **BUFFALO LAN to DS57U lower `eth0` WAN**. Leave DS57U upper `eth1`
+connected to the test PC. This is a routed, subordinate OpenWrt connection;
+do not connect BUFFALO LAN to DS57U LAN or retain the former
+DS57U-LAN-to-BUFFALO-WAN link.
+
+After DHCP settles, use one persistent SSH session and inspect:
+
+```sh
+ubus call network.interface.wan status
+ip -4 route
+ubus call network.interface.wan6 status
+ubus call network.interface.mape_auto status
+ping -c 4 192.168.11.1
+ping -c 4 1.1.1.1
+nslookup example.com
+curl -4 -I --max-time 15 https://example.com
+```
+
+Expected IPv4 WAN is a newly acquired `192.168.11.x` lease, gateway
+`192.168.11.1`; do not assume the previous lease address will return.
+Verify the default route actually uses this WAN. A now-absent `mape_auto`
+is expected if the guarded cleanup completed. If the generated MAP-E
+interface/include persists, follow
+[Phase 2: Reverting MAP Settings](phase2-setup.md#reverting-map-settings):
+preserve configs, run the reviewed reconcile script after DHCP IPv4 is up,
+and verify cleanup. If it fails, leave DS57U WAN disconnected and retain
+the working direct-ONU BUFFALO connection while investigating locally.
+Return-to-BUFFALO cleanup is an open verification gate, not an assumed pass.
+
+Record date, cable endpoints, exact settings/commands, outputs, exit statuses,
+configuration diffs, failures and retests in the replacement history. Treat
+BUFFALO client Internet recovery and optional subordinate OpenWrt recovery
+as separate outcomes.
 
 Execution evidence: [docs/history/phase2-router-mode-replacement.md](docs/history/phase2-router-mode-replacement.md).
