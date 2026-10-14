@@ -1089,6 +1089,7 @@ Ignored bounded PTY transcript:
 Public prefix redacted; this is not a complete router log export.
 Local `rtk git diff --check` passed, exit 0, with LF-to-CRLF warnings only.
 
+
 ### 2026-10-14 JST - Apply OpenWrt IPv6 relay; BUFFALO change pending
 
 The user explicitly authorized updating OpenWrt first, followed by their
@@ -1594,3 +1595,240 @@ the phone's route/BUFFALO forwarding path. No diagnosis of the exact cause
 or corrective router setting is established yet.
 No router mutations, rollback, restarts or cable moves performed.
 Local `rtk git diff --check` passed, exit 0, with LF-to-CRLF warnings only.
+
+### 2026-10-14 JST - ADB identifies Android RA lifetime mismatch (read-only)
+
+User supplied the Windows platform-tools adb.exe path and authorized
+inspection of the Android IPv6 issue. ADB devices listed two transports for
+the same ASUS_AI2202; selected the explicit Wi-Fi transport
+192.168.11.10:37501. Model ASUS_AI2202, Android 14, SDK 34, security patch
+2024-07-05. Final device date was 2026-10-14T22:45:14+09:00.
+
+No phone settings, sysctls, routes, VPN/private-DNS settings, router
+configuration, Wi-Fi associations or physical cables were changed.
+No reset, root request, reboot, Wi-Fi disable/enable, ADB pairing, or
+new diagnostic app installation performed.
+
+Local preflight: rtk git status --short was clean. Registry search for adb
+returned no relevant memory entry. No memory-derived diagnosis was used.
+
+Commands used the supplied executable and selected serial, wrapped in
+rtk proxy cmd.exe /c. Read-only ADB queries/tests in execution order
+(independent groups were batched):
+
+```text
+adb.exe devices -l
+adb.exe -s 192.168.11.10:37501 shell getprop ro.build.version.release
+adb.exe -s 192.168.11.10:37501 shell getprop ro.build.version.sdk
+adb.exe -s 192.168.11.10:37501 shell ip -6 addr show dev wlan0
+adb.exe -s 192.168.11.10:37501 shell ip -6 route show table all
+adb.exe -s 192.168.11.10:37501 shell ip -6 rule show
+adb.exe -s 192.168.11.10:37501 shell settings get global private_dns_mode
+adb.exe -s 192.168.11.10:37501 shell settings get global private_dns_specifier
+adb.exe -s 192.168.11.10:37501 shell settings get secure always_on_vpn_app
+adb.exe -s 192.168.11.10:37501 shell settings get secure always_on_vpn_lockdown
+adb.exe -s 192.168.11.10:37501 shell dumpsys connectivity
+adb.exe -s 192.168.11.10:37501 shell ping -6 -I wlan0 -c 3 -W 2 2606:4700:4700::1111
+adb.exe -s 192.168.11.10:37501 shell ping -6 -I wlan0 -c 3 -W 2 fe80::6ae1:dcff:fe37:1d10
+adb.exe -s 192.168.11.10:37501 shell ip -6 neigh show dev wlan0
+adb.exe -s 192.168.11.10:37501 shell cat /proc/sys/net/ipv6/conf/wlan0/accept_ra /proc/sys/net/ipv6/conf/wlan0/accept_ra_defrtr /proc/sys/net/ipv6/conf/wlan0/forwarding /proc/sys/net/ipv6/conf/wlan0/router_solicitations
+adb.exe -s 192.168.11.10:37501 shell logcat -d -t 1500 -s IpClient IpClient.wlan0 ConnectivityService NetworkMonitor
+adb.exe -s 192.168.11.10:37501 shell ping6 -I wlan0 -c 3 -W 2 2606:4700:4700::1111
+adb.exe -s 192.168.11.10:37501 shell ping6 -I wlan0 -c 3 -W 2 fe80::6ae1:dcff:fe37:1d10
+adb.exe -s 192.168.11.10:37501 shell cat /proc/sys/net/ipv6/conf/wlan0/accept_ra_min_rtr_lft /proc/sys/net/ipv6/conf/wlan0/accept_ra_rtr_pref /proc/sys/net/ipv6/conf/wlan0/disable_ipv6
+adb.exe -s 192.168.11.10:37501 shell ip -6 route get 2606:4700:4700::1111 oif wlan0
+adb.exe -s 192.168.11.10:37501 shell id
+adb.exe -s 192.168.11.10:37501 shell cat /proc/sys/net/ipv6/conf/wlan0/accept_ra_min_lft
+adb.exe -s 192.168.11.10:37501 shell ls /proc/sys/net/ipv6/conf/wlan0
+adb.exe -s 192.168.11.10:37501 shell device_config get connectivity ipclient_min_ra_lifetime
+adb.exe -s 192.168.11.10:37501 shell device_config get connectivity min_ra_lifetime
+adb.exe -s 192.168.11.10:37501 shell getprop ro.build.version.security_patch
+```
+
+The first dumpsys connectivity returned very large output, truncated by
+the tool. Corrected collection saved full network_stack/connectivity dumps
+locally to ignored backups with a PowerShell helper, without displaying
+all raw data:
+
+```text
+rtk proxy powershell -NoProfile -File backups/2026-10-14-adb-ipv6/collect.ps1
+exit 0; both ADB dumpsys calls exit 0.
+```
+
+Focused UTF-8 reads of the first network-stack section revealed RA filter
+summary and packet bytes. Long-line matches containing provisioning
+information were omitted from the tracked report; ignored raw dumps retain
+the full evidence. Two combined-regex rg calls failed at rtk shell pipe
+parsing; direct focused reads replaced them.
+
+#### Direct observations
+
+```text
+Wi-Fi interface: wlan0, index 26
+Wi-Fi IPv4: 192.168.11.10/24
+Wi-Fi public IPv6: stable and temporary addresses in the upstream /64
+Wi-Fi routing table: 1026
+IPv6 default route in table 1026: ABSENT
+Wi-Fi LinkProperties ::/0 route: ABSENT
+IPv4 default: 192.168.11.1
+
+/proc/sys/net/ipv6/conf/wlan0/accept_ra = 2
+/proc/sys/net/ipv6/conf/wlan0/accept_ra_defrtr = 1
+/proc/sys/net/ipv6/conf/wlan0/forwarding = 0
+/proc/sys/net/ipv6/conf/wlan0/disable_ipv6 = 0
+/proc/sys/net/ipv6/conf/wlan0/accept_ra_min_lft = 180
+
+APF RA filters:
+RA fe80::6ae1:dcff:fe37:1d10 -> ff02::1 108s
+[PUBLIC_UPSTREAM_PREFIX]/64 7200s/3600s
+DNS 600s fe80::82ee:73ff:feab:4af1
+```
+
+The raw cached RA contains lifetime field 0x006c (108 seconds).
+Source link-local/MAC belongs to BUFFALO; the RA contains the expected
+public prefix and OpenWrt eth1 link-local DNS. Android accepts the prefix
+lifetimes, but the advertised default-router lifetime is below its configured
+minimum. APF has seen this RA repeatedly (passed/dropped duplicate RA
+counters); a generic dropped-RA counter alone was not treated as a fault.
+
+The full route query included an IPv6 default on a cellular IMS interface,
+but not Wi-Fi. Do not confuse the IMS route with a Wi-Fi Internet route.
+ConnectivityService's active default network was Wi-Fi (netId 183),
+NOT_VPN and IPv4-validated. The phone's UI N/A gateway was corroborated
+by kernel routing and Wi-Fi LinkProperties, not merely app display.
+
+Private DNS mode = opportunistic; stored specifier exists but is not an
+active strict hostname mode. Always-on VPN app=null, lockdown=0.
+The current Wi-Fi NetworkAgentInfo is NOT_VPN. None of these settings
+was changed or identified as the cause.
+
+Tests:
+
+```text
+ping6 -I wlan0 -c 3 -W 2 2606:4700:4700::1111
+connect: Network is unreachable
+exit 1
+
+ip -6 route get 2606:4700:4700::1111 oif wlan0
+RTNETLINK answers: Network is unreachable
+exit 1
+
+ping -I wlan0 -c 3 -W 2 1.1.1.1
+3 transmitted, 3 received, 0% packet loss
+exit 0
+```
+
+Initial ping -6 commands failed because this Android ping binary does not
+support that flag; corrected with ping6. A link-local ping6 using -I wlan0
+failed with sendmsg Invalid argument; this utility/scoping failure is not
+proof that the gateway is unreachable. The neighbor table separately
+showed BUFFALO's link-local router as REACHABLE. The earlier sysctl name
+accept_ra_min_rtr_lft was absent; the actual accept_ra_min_lft file was
+present and read twice as 180.
+
+#### Diagnosis and correction boundary
+
+The [Android kernel implementation](https://android.googlesource.com/kernel/common/+/dd976ecce2ce969d698599c84c8e7dcbb07c9aaf%5E%21)
+checks a nonzero advertised router lifetime against accept_ra_min_lft and
+skips default-router installation if it is lower. Here 108 < 180.
+This provides a concrete explanation for accepted public IPv6 addresses
+without a Wi-Fi IPv6 default route and immediate numeric-ping failure.
+The findings supersede the earlier generic suspicion of phone network
+settings: the identified issue is compatibility between BUFFALO ND proxy
+advertisement lifetime and Android's route-lifetime acceptance policy.
+
+The user's same-Wi-Fi iPhone 10/10 result is user-reported. Previous wired-PC
+IPv6 tests passed. Those results are consistent with other clients accepting
+the shorter lifetime; they do not negate the Android threshold.
+
+Preferred correction: a BUFFALO advertised router lifetime of at least
+180 seconds (e.g. 1800 if the firmware exposes/supports that control).
+No such timing control has been shown on this BUFFALO UI. Candidate
+workaround: BUFFALO IPv6 bridge/passthrough, retaining IPv4 router mode,
+to pass OpenWrt's advertisements to clients. Recorded OpenWrt LAN RA
+lifetime was 1800 seconds at 01:03:09; that is earlier evidence, not a fresh
+router check at 22:45. Revalidate OpenWrt advertisements and WAN IPv6
+filtering before the bridge trial. BUFFALO IPv6 filtering is bypassed in
+bridge mode, so end-to-end security-boundary checks remain required.
+
+[BUFFALO support](https://www.buffalo.jp/support/faq/detail/16422.html)
+documents IPv6 passthrough as an alternative when ND proxy fails.
+The bridge workaround is proposed, not applied or verified here. No Android
+threshold reduction/static route was attempted. A corrective A/B trial
+remains needed to establish the final fix. The original intermittent IPv4
+Internet outage is not proven to have the same cause.
+
+#### Saved evidence
+
+Ignored local directory: backups/2026-10-14-adb-ipv6/.
+
+| File | SHA-256 |
+|---|---|
+| checks.txt | 0ac6030dbdcedaa2651193a85f2fdd4f19632c0f05e7ef27280ed053366983ea |
+| network_stack.txt | 4ab096cc2ac3ac8fce06f9e9f4aa81c7ec82d57b0879a4bc7c9e21d157b158b6 |
+| connectivity.txt | b3f0279ee356aab9ceb6a8ec480791be5f555e95a7eaab75bab0f325b788a19b |
+
+Full dumps may contain SSIDs, device identifiers and app/network activity;
+they remain ignored. Tracked evidence above omits unnecessary private data.
+The IPv6 relay plan records the diagnosis and untested corrective options.
+Local documentation validation: rtk git diff --check passed, exit 0; LF-to-CRLF warnings only.
+
+### 2026-10-14 JST - Android IPv6 passes after BUFFALO bridge selection
+
+User reported selecting **IPv6ブリッジを使用する** and saving on BUFFALO.
+Topology remains ONU -> OpenWrt -> BUFFALO WAN -> Android main Wi-Fi;
+BUFFALO retains IPv4 router mode. Verification at 23:01 JST used ADB
+transport `192.168.11.10:37501` on ASUS_AI2202. No OpenWrt or phone
+configuration was changed in this verification. No rollback was run.
+
+Commands executed through
+`rtk proxy cmd.exe /c "C:\Users\akusu\Downloads\platform-tools-latest-windows\platform-tools\adb.exe -s 192.168.11.10:37501 shell <command>"`:
+
+1. `ip -6 route show table all`: exit 0; wlan0 table 1026 now includes
+   `default via fe80::82ee:73ff:feab:4af1 ... proto ra ... expires 1622sec`.
+2. `ping6 -I wlan0 -c 3 -W 2 2606:4700:4700::1111`: exit 0; 3/3 replies.
+3. `command -v curl`: exit 0; `/system/bin/curl`.
+
+Saved repeatable collection command:
+`rtk proxy powershell -NoProfile -ExecutionPolicy Bypass -File backups/2026-10-14-adb-ipv6-bridge/collect.ps1`, exit 0.
+The script executed these commands in order through the same explicit ADB
+transport; all exited 0:
+
+```text
+date
+  Wed Oct 14 23:01:13 JST 2026
+cat /proc/sys/net/ipv6/conf/wlan0/accept_ra_min_lft
+  180
+ip -6 route show table 1026
+  default via fe80::82ee:73ff:feab:4af1 dev wlan0 proto ra metric 1024 expires 1589sec hoplimit 64 pref medium
+ping6 -I wlan0 -c 3 -W 2 2606:4700:4700::1111
+  3 packets transmitted, 3 received, 0% packet loss
+curl --interface wlan0 -6 --connect-timeout 10 --max-time 20 -sS -o /dev/null -w HTTP=%{http_code} https://ipv6.google.com/
+  HTTP=200
+curl --interface wlan0 -4 --connect-timeout 10 --max-time 20 -sS -o /dev/null -w HTTP=%{http_code} https://www.google.com/
+  HTTP=200
+dumpsys network_stack
+  RA fe80::82ee:73ff:feab:4af1 -> ff02::1 1800s 2400:4050:c340:1600::/64 2592000s/604800s
+  RA fe80::6ae1:dcff:fe37:1d10 -> ff02::1 108s 2400:4050:c340:1600::/64 7200s/3600s DNS 600s fe80::82ee:73ff:feab:4af1
+dumpsys connectivity
+  Saved locally; exit 0.
+```
+
+The cached APF list contains both the previous BUFFALO advertisement and
+the newly received OpenWrt advertisement; the stale entry alone does not
+prove that BUFFALO continues transmitting it. Android's threshold remains
+180, but the 1800-second advertisement now permits default-route installation.
+IPv6 ping and IPv6-only HTTPS are observed passes over wlan0, independently
+of the cellular interface. IPv4 HTTPS also passes. Browser test-ipv6.com
+score, reconnect/reboot persistence and unsolicited external inbound
+filtering remain untested. This establishes the Android IPv6 workaround,
+not the cause of the original intermittent Internet outage.
+
+Ignored evidence directory: `backups/2026-10-14-adb-ipv6-bridge/`.
+Full dumps stay local because they include unrelated device/app details.
+
+| File | SHA-256 |
+|---|---|
+| checks.txt | b6f78968e89dc35d3e89d4c64e748d0e08728ea8c9a26b4953d8a67c00c8c31b |
+| network_stack.txt | 1730bf54dea07b146ab9bf41fc42e231260020343869c8614c94b87c1433c7b5 |
+| connectivity.txt | a0549f81022de39e676c2f29cbaa68e401ac8f8a3ad2d9b11c69e1710386fc7e |

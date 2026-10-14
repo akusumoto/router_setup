@@ -1,9 +1,14 @@
 # Proposed IPv6 relay configuration
 
 Status: OpenWrt settings applied on 2026-10-14. Direct-LAN and BUFFALO-LAN
-PC IPv4/IPv6 HTTPS passed. BUFFALO automatic mode selected ND proxy without
-a manual setting change. The phone's supplied test reports IPv4 only;
-phone acceptance and the cause of that failure remain unresolved.
+PC IPv4/IPv6 HTTPS passed. BUFFALO automatic ND proxy advertised a
+108-second default-router lifetime, below Android's 180-second
+accept_ra_min_lft, leaving the phone without an IPv6 default route.
+After the user selected IPv6 bridge on BUFFALO, ADB verification at
+23:01 JST confirmed OpenWrt's 1800-second advertisement, the Wi-Fi default
+route, IPv6 ping (3/3), and Wi-Fi-bound IPv4/IPv6 HTTPS (HTTP 200).
+The phone browser score, persistence and external inbound filtering checks
+remain pending.
 Execution evidence: [OpenWrt relay update](../history/phase2-setup.md#2026-10-14-jst---apply-openwrt-ipv6-relay-buffalo-change-pending).
 
 Purpose: carry the upstream public SLAAC /64 to downstream clients while
@@ -25,9 +30,44 @@ confirm the router-mode IPv6 menu and option. The supplied WSR-6000AX8
 firmware 1.15 screenshot confirms that this option exists on this device.
 
 The upstream /64 remains an RA prefix, not a newly delegated LAN range.
-NDP proxy route learning is required for return traffic. The additional
-BUFFALO proxy boundary is untested. IPv6 bridge is a fallback to evaluate
-only if ND proxy fails with evidence; it is not the initial proposed mode.
+NDP proxy route learning on OpenWrt is required for return traffic.
+BUFFALO IPv6 bridge is the tested Android connectivity workaround after
+ND proxy failed because of its advertised router lifetime.
+
+### Android compatibility finding and verified bridge workaround
+
+ADB on the ASUS_AI2202 (Android 14) showed no default IPv6 route in the
+Wi-Fi routing table and `ping6 -I wlan0` failed with Network is unreachable.
+The current APF RA packet log shows BUFFALO's router lifetime as 108 seconds.
+`/proc/sys/net/ipv6/conf/wlan0/accept_ra_min_lft` is 180. The
+[Android kernel lifetime check](https://android.googlesource.com/kernel/common/+/dd976ecce2ce969d698599c84c8e7dcbb07c9aaf%5E%21)
+skips default-router installation for a nonzero lifetime below this setting.
+This is a BUFFALO/Android advertisement-lifetime compatibility issue.
+The previously user-reported iPhone 10/10 and observed wired-PC success do
+not invalidate the Android-specific minimum.
+
+Preferred correction, if supported by BUFFALO: increase its advertised
+default-router lifetime to at least 180 seconds (a normal longer lifetime
+such as 1800 avoids operating at the threshold). No such setting was shown
+in the supplied UI; do not invent an unsupported control or firmware edit.
+
+Verified workaround: select **IPv6ブリッジを使用する** on BUFFALO's
+IPv6 page so clients can receive OpenWrt's relayed advertisements directly.
+ADB confirmed the relayed RA lifetime as 1800 seconds after the change.
+Preserve BUFFALO's IPv4 router mode and current cabling. IPv6
+bridge removes BUFFALO's own IPv6 filtering from that path, so verify
+OpenWrt WAN-to-LAN IPv6 filtering and the external inbound boundary as part
+of acceptance. Android installed a default route through
+`fe80::82ee:73ff:feab:4af1` on wlan0; numeric IPv6 ping and forced IPv6
+HTTPS passed. The APF log retains the earlier 108-second BUFFALO RA entry;
+the newly received 1800-second OpenWrt RA and installed route establish
+that the longer advertisement reached the phone.
+
+Do not lower Android's kernel threshold or inject a static phone route as
+the default solution. No phone settings were modified during ADB diagnosis.
+ADB Wi-Fi ::/0 route, source-bound numeric IPv6 ping and IPv6-only HTTPS
+passed on 2026-10-14 at 23:01 JST. Recheck the phone's test-ipv6.com browser
+result and persistence after Wi-Fi reconnection/device reboot.
 
 Retain the working IPv4 DHCP service, BUFFALO reservation 192.168.1.2,
 BUFFALO LAN 192.168.11.1/24, OpenWrt LAN 192.168.1.1/24, network.wan6 settings,
@@ -110,9 +150,10 @@ with SLAAC enabled and router lifetime 1800 seconds. Subsequently a PC on
 BUFFALO LAN also passed source-bound IPv4/IPv6 HTTPS; captures showed NDP
 proxy responses and bidirectional IPv6 traffic. The phone acquired public
 addresses but its supplied test-ipv6.com screenshot reports 0/10 and IPv4
-only. Its IPv6 gateway/DNS path and phone/browser behavior remain to be
-verified. PC success does not satisfy phone acceptance; the checks below
-remain the full acceptance criteria.
+only in ND proxy mode. Following the BUFFALO bridge change, ADB verified
+the Android Wi-Fi default route, numeric IPv6 ping and IPv6-only HTTPS.
+Browser score, persistence and unsolicited inbound filtering are still
+unverified; the checks below remain the full acceptance criteria.
 
 - OpenWrt: wan6 and mape_auto remain up; IPv4 default still map-mape_auto.
 - LAN capture: public /64 advertised with SLAAC enabled and nonzero
