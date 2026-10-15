@@ -1832,3 +1832,252 @@ Full dumps stay local because they include unrelated device/app details.
 | checks.txt | b6f78968e89dc35d3e89d4c64e748d0e08728ea8c9a26b4953d8a67c00c8c31b |
 | network_stack.txt | 1730bf54dea07b146ab9bf41fc42e231260020343869c8614c94b87c1433c7b5 |
 | connectivity.txt | a0549f81022de39e676c2f29cbaa68e401ac8f8a3ad2d9b11c69e1710386fc7e |
+### 2026-10-16 JST - Current interface MTU inspection (read-only)
+
+Topology: live routes show IPv4 default through `map-mape_auto`, IPv6 default
+through `eth0`, LAN `192.168.1.0/24` on `br-lan`, and BUFFALO LAN
+`192.168.11.0/24` through `192.168.1.2`. Cable positions were not physically
+inspected. No configuration changes, backup, or rollback were needed.
+
+Access attempts: the first sandboxed SSH connection failed with exit 1,
+`ssh: connect to host 192.168.1.1 port 22: Permission denied`.
+An elevated connection succeeded, but its stdin closed because it lacked a
+local TTY; no diagnostic commands ran there. Reconnected with a local TTY:
+
+```text
+rtk proxy cmd.exe /c 'ssh -tt -i .local-ssh/id_ed25519_v2 -o BatchMode=yes -o ConnectTimeout=8 root@192.168.1.1'
+```
+
+Commands sent through that persistent session, in execution order:
+
+```sh
+date -Iseconds
+ip -o link show
+echo link_rc=$?
+ip route show default
+ip -6 route show default
+for n in wan wan6 mape_auto; do echo INTERFACE=$n; ifstatus "$n" | jsonfilter -e '@.up' -e '@.device' -e '@.l3_device'; done
+uci show network | grep -E 'mtu|proto|device'
+echo config_rc=$?
+exit
+```
+
+Observed time: `2026-10-16T01:44:19+09:00`. Relevant verbatim excerpts:
+
+```text
+2: eth0: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc mq state UP qlen 1000
+3: eth1: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc fq_codel master br-lan state UP qlen 1000
+5: br-lan: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc noqueue state UP qlen 1000
+10: map-mape_auto@eth0: <POINTOPOINT,NOARP,UP,LOWER_UP> mtu 1280 qdisc noqueue state UNKNOWN qlen 1000
+link_rc=0
+default dev map-mape_auto scope link
+INTERFACE=wan
+false
+eth0
+INTERFACE=wan6
+true
+eth0
+eth0
+INTERFACE=mape_auto
+true
+map-mape_auto
+network.wan.device='eth0'
+network.wan.proto='dhcp'
+network.wan6.device='eth0'
+network.wan6.proto='dhcpv6'
+network.mape_auto.proto='map'
+config_rc=0
+```
+
+IPv6 default used `eth0` (global IPv6 addresses omitted). No explicit `mtu`
+option appeared in `uci show network`. Individual route/ifstatus exit codes
+were not captured; their output was observed. MTU inspection passed: LAN and
+native WAN link MTU 1500 bytes, active IPv4 MAP-E interface MTU 1280 bytes.
+No path-MTU probe, downstream BUFFALO inspection, connectivity test, or reboot
+test was performed. This establishes interface MTUs only.
+
+### 2026-10-16 JST - MAP-E MTU 1460 test and persistence (executed)
+
+Topology: DS57U IPv4 default `map-mape_auto`, native IPv6 default `eth0`,
+LAN `192.168.1.1/24` on `br-lan`/`eth1`. Windows wired client
+`192.168.11.97` uses BUFFALO `192.168.11.1`; Wi-Fi and NordLynx were
+disconnected. No cables moved. `wan=false`, `wan6=true`, `mape_auto=true`.
+UCI network had no pending changes; baseline tunnel MTU 1280, physical WAN
+1500, `encaplimit=ignore`, WAN zone `mtu_fix=1`. Installed map backend line
+82 confirmed `json_add_int mtu "${mtu:-1280}"`.
+
+Pre-change backup commands (persistent SSH session):
+
+```sh
+mkdir -p /root/mtu-test-20261016
+cp -p /etc/config/network /root/mtu-test-20261016/network.before
+cp -p /etc/config/firewall /root/mtu-test-20261016/firewall.before
+cp -p /etc/config/dhcp /root/mtu-test-20261016/dhcp.before
+sha256sum /root/mtu-test-20261016/*.before
+```
+
+SHA-256 output:
+
+```text
+4b79c410362bbae08813112a9b4547b98e6c6400525e73a966545843ceeb6b30  dhcp.before
+c453154a646539461bf0048a7dc4c037cd10067c1cf79244759957d5b327f60e  firewall.before
+1e0c63ba79568b9a7db91e9d3ba4d8df1598ff880c413e21ec66117f4b39e847  network.before
+```
+
+All three backup files were read by sha256sum; individual cp exit statuses
+were not separately captured. Baseline IPv4 and IPv6 ping each passed 3/3,
+DNS returned A/AAAA, and IPv4 HTTPS returned HTTP 200, all reported rc=0.
+Windows baseline DF ping with 1252-byte payload passed 3/3 (exit 0).
+The first long SSH input was truncated at curl (curl reported no URL);
+rerunning the complete curl command separately returned HTTP 200/rc=0.
+
+Runtime test commands, after baseline checks:
+
+```sh
+( trap '' HUP; sleep 300; ip link set dev map-mape_auto mtu 1280; logger -t mtu-test 'automatic rollback to 1280' ) >/tmp/mtu-rollback.log 2>&1 &
+RB=$!; echo rollback_pid=$RB; kill -0 "$RB"; echo rollback_armed_rc=$?
+ip link set dev map-mape_auto mtu 1460; echo set_mtu_rc=$?
+cat /sys/class/net/map-mape_auto/mtu
+tcpdump -ni eth0 -vv -c 12 'ip6 proto 4' >/tmp/mtu1460-capture.txt 2>&1 &
+```
+
+Observed rollback PID 7971, armed rc=0; set_mtu_rc=0, readback 1460.
+PC commands (prefix each with `rtk proxy cmd.exe /c`, with the inner command
+quoted as a single argument):
+
+```text
+ping -4 -S 192.168.11.97 -f -l 1432 -n 4 -w 2000 1.1.1.1
+ping -4 -S 192.168.11.97 -f -l 1432 -n 4 -w 2000 8.8.8.8
+ping -4 -S 192.168.11.97 -f -l 1433 -n 2 -w 2000 1.1.1.1
+curl.exe --noproxy * --interface 192.168.11.97 -4 --connect-timeout 5 --max-time 25 -sS -o NUL -w HTTP=%{http_code} https://openwrt.org/
+```
+
+Both 1432-byte DF tests passed 4/4 with 4-5 ms RTT (exit 0).
+1432 + 20-byte IPv4 header + 8-byte ICMP header = 1460 bytes.
+At 1433 bytes, output included `Reply from 192.168.1.1: Packet needs to be
+fragmented but DF set.` Windows returned exit 0 despite that response;
+the content establishes rejection, not echo success.
+Sandboxed curl to openwrt.org failed rc=7/HTTP=000 (process exit 1), as did
+a Cloudflare retry. Repeating the source-bound openwrt.org request with
+sandbox network restrictions lifted passed HTTP=200, process exit 0.
+This distinguishes the local execution restriction from a tunnel failure.
+
+Router follow-up commands:
+
+```sh
+cat /tmp/mtu1460-capture.txt
+ping -6 -c 3 -W 3 2606:4700:4700::1111; echo test_v6_rc=$?
+nslookup openwrt.org 127.0.0.1; echo test_dns_rc=$?
+curl -4 -sS -o /dev/null --connect-timeout 5 --max-time 20 -w 'HTTP=%{http_code}\n' https://openwrt.org/; echo test_https_rc=$?
+tcpdump -ni eth0 -vv -c 4 'ip6 proto 4 and ip6[40] = 0x45 and ip6[49] = 1' >/tmp/mtu1460-icmp.txt 2>&1 &
+```
+
+IPv6 passed 3/3, DNS returned A/AAAA, HTTPS HTTP=200; all rc=0.
+First capture reached its limit with background TCP before the test ping;
+it showed TCP MSS 1420 but did not establish the ping packet size.
+Repeated PC DF ping with 1432-byte payload and `-n 2` passed 2/2, exit 0.
+Then `cat /tmp/mtu1460-icmp.txt` showed four ICMP tunnel packets, zero kernel
+drops. Relevant excerpt, endpoint addresses redacted:
+
+```text
+IP6 (flowlabel 0x79d8c, hlim 64, next-header IPIP (4), payload length 1460) [CE] > [BR]: IP (tos 0x0, ttl 126, id 40409, offset 0, flags [DF], proto ICMP (1), length 1460)
+    [PUBLIC_IPV4] > 1.1.1.1: ICMP echo request, id 1387, seq 14, length 1440
+IP6 (hlim 60, next-header IPIP (4), payload length 1460) [BR] > [CE]: IP (tos 0x38, ttl 54, id 19887, offset 0, flags [none], proto ICMP (1), length 1460)
+    1.1.1.1 > [PUBLIC_IPV4]: ICMP echo reply, id 1387, seq 14, length 1440
+4 packets captured
+4 packets received by filter
+0 packets dropped by kernel
+```
+
+The outer IPv6 packets have 1460-byte payload plus 40-byte header, direct
+IPIP next-header, and no fragmentation header. This validates this packet
+size on the observed path in both directions.
+
+After reviewing the sole UCI delta and writing the sanitized baseline in
+`router-config/mtu-1460.md`, persisted the setting:
+
+```sh
+uci set network.mape_auto.mtu='1460'; echo stage_rc=$?
+uci changes network
+uci -q get network.lan.ipaddr
+uci -q get network.lan.device
+uci -q get network.@device[0].ports
+uci commit network; echo commit_rc=$?
+uci get network.mape_auto.mtu
+cat /sys/class/net/map-mape_auto/mtu
+kill "$RB"; echo cancel_rollback_rc=$?
+kill -0 "$RB" 2>/dev/null; echo rollback_alive_rc=$?
+sha256sum /etc/config/firewall /etc/config/dhcp
+uci changes network
+ip -4 route show default
+kill -0 "$RB" 2>/dev/null; echo rollback_alive_final_rc=$?
+cat /sys/class/net/map-mape_auto/mtu
+uci get network.mape_auto.mtu
+ping -4 -c 3 -W 3 1.1.1.1; echo final_v4_rc=$?
+exit
+```
+
+Stage and commit rc=0. Sole delta `network.mape_auto.mtu='1460'`;
+LAN readback remained `192.168.1.1/24`, `br-lan`, `eth1`. Committed and
+runtime MTU both 1460. Firewall/DHCP hashes matched backups, no pending
+network changes, IPv4 default remained `map-mape_auto`. Rollback kill rc=0;
+immediate alive check raced with termination (rc=0), shell then reported
+job terminated, final alive check rc=1 confirmed it stopped. Automatic
+rollback did not execute. Router final ping 3/3, rc=0; PC final 1432-byte DF
+ping 3/3 at 4 ms, exit 0. SSH exited 0.
+
+Verdict: 1460 passed the runtime/client-path acceptance checks and is saved
+in UCI. No throughput improvement is claimed. Reboot, interface recreation,
+and all possible Internet destinations remain unverified. The rollback
+commands and reprovisioning limitation are in the sanitized change record.
+
+Complete collected router command/output chunks and initial client tests
+are in ignored `backups/mtu-test-20261016/session.json`, SHA-256
+`48e3ef404904691cb9c95c7cefb36eccae86ae62b2bc179f7d2965cc1464944f`.
+Later elevated client HTTPS and final client ping results are recorded above.
+No credentials are included. Public/client addresses and unrelated captured
+endpoint metadata remain confined to ignored local evidence.
+### 2026-10-16 JST - Post-change MTU recheck (read-only)
+
+Observed router time `2026-10-16T01:56:29+09:00`. Same topology as the
+preceding MTU test; no cable move or configuration change performed.
+Used one persistent SSH session with the documented key and root endpoint.
+Commands and relevant output:
+
+```sh
+date -Iseconds
+for n in eth0 eth1 br-lan map-mape_auto; do printf '%s MTU=' "$n"; cat /sys/class/net/$n/mtu; done
+uci get network.mape_auto.mtu; echo saved_mtu_rc=$?
+uci changes network
+for n in wan wan6 mape_auto; do echo INTERFACE=$n; ifstatus "$n" | jsonfilter -e '@.up' -e '@.l3_device'; done
+exit
+```
+
+```text
+eth0 MTU=1500
+eth1 MTU=1500
+br-lan MTU=1500
+map-mape_auto MTU=1460
+1460
+saved_mtu_rc=0
+INTERFACE=wan
+false
+INTERFACE=wan6
+true
+eth0
+INTERFACE=mape_auto
+true
+map-mape_auto
+```
+
+`uci changes network` emitted no pending changes. SSH exited 0; individual
+loop-command exit statuses were not separately captured. Local command
+`rtk proxy cmd.exe /c 'netsh interface ipv4 show subinterfaces'` exited 0
+and showed connected Ethernet MTU 1500 (MediaSenseState 1). Disconnected
+NordLynx MTU 1420 is not the active path.
+
+PASS: active and committed MAP-E MTU both remain 1460; router LAN and
+physical WAN plus connected PC Ethernet remain 1500. BUFFALO interface
+MTUs were not directly inspected. No new packet-size probe or reboot was
+performed; prior runtime proof remains in the preceding test record.
+Rollback not needed for this read-only check.

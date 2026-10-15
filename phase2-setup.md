@@ -193,6 +193,17 @@ tcpdump -ni eth0 -vv 'icmp6 or (udp port 546 or udp port 547)'
 
 Log `wan6`'s `up` state, acquired global IPv6 address, prefix length, delegated prefix presence, IPv6 default route, DNS, external IPv6 ping, and timestamp. A global address on WAN does not guarantee prefix delegation to LAN, so test PC IPv6 might not work. Evaluate 2A success based on OpenWrt's own IPv6 connectivity; record LAN IPv6 separately. [OpenWrt IPv6 Config](https://openwrt.org/docs/guide-user/network/ipv6/configuration)
 
+For the fallback MAP-E interface, use the tested [MTU override and rollback
+procedure](router-config/mtu-1460.md). With a 1500-byte IPv6 WAN and
+`encaplimit=ignore`, a 1460-byte IPv4 packet fits with its 40-byte outer IPv6
+header. OpenWrt otherwise defaults this tunnel to 1280. Preserve LAN/WAN
+link MTU 1500 and WAN MSS clamping. Before accepting the override, test
+1432-byte ICMP payloads with DF from a LAN client, IPv4 HTTPS, native IPv6,
+DNS, and the expected fragmentation-needed response above 1460. Inspect
+the outer capture for unfragmented IPv6 packets. Recheck after reboot or
+MAP-E section recreation; those persistence checks are separate from a
+successful runtime test.
+
 Also verify OCN's [IPoE Connection Check Site](https://v6test.ocn.ne.jp/) from a device actually using the test route. If the PC has Wi-Fi or other paths, do not treat those results as proof for OpenWrt.
 
 ## 5. Phase 2B — Calculating MAP-E Info from the CE IPv6 Address
